@@ -1,7 +1,0 @@
-{
-  "name": "bitrix-proxy-netlify",
-  "private": true,
-  "engines": {
-    "node": ">=18"
-  }
-}

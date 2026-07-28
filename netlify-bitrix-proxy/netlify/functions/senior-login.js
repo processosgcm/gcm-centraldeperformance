@@ -133,7 +133,7 @@ export default async (req) => {
     });
 
    const xml = await upstream.text();
-console.log("XML bruto da Senior:", xml);   // ← linha temporária de diagnóstico
+
 
     if (!upstream.ok) {
       console.error("Senior SOAP HTTP", upstream.status, xml.slice(0, 500));
@@ -141,12 +141,15 @@ console.log("XML bruto da Senior:", xml);   // ← linha temporária de diagnós
     }
 
 const erroExecucao = extractTag(xml, "erroExecucao");
-
-const gcmAutenticadoRaw = (extractTag(xml, "gcmAutenticado") || "").toLowerCase();
-const autenticado = ["true", "s", "sim", "1"].includes(gcmAutenticadoRaw);
-const email = extractTag(xml, "email");
+const statusRetorno = extractTag(xml, "status");
 const mensagemRetorno = extractTag(xml, "mensagem");
+const email = extractTag(xml, "email");
 const abrangencias = extractAbrangencias(xml);
+
+// A Senior usa "status" dentro de <retorno> como código estilo HTTP:
+// 200 = login válido, 400 = usuário/senha incorretos.
+// gcmAutenticado NÃO é booleano (vem 0/-1), por isso não é usado aqui.
+const autenticado = statusRetorno === "200";
 
 return json({
   autenticado,

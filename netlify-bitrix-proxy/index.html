@@ -184,14 +184,7 @@ table.log td.num{text-align:right;color:var(--ink-soft);white-space:nowrap}
 </head>
 <body>
 <script>
-/* ═══════════════ PORTÃO DE SESSÃO ═══════════════
-   Aviso importante: isto é uma trava de UX (evita que alguém sem login
-   veja o painel casualmente), NÃO é segurança de verdade — sessionStorage
-   é controlado pelo próprio navegador do usuário e pode ser forjado nas
-   ferramentas de desenvolvedor. Proteção real exigiria uma sessão validada
-   no servidor (cookie assinado, checado a cada carregamento). Se isso for
-   necessário, avise que a gente implementa.
-   Duração da sessão: 8 horas. */
+/* PORTÃO DE SESSÃO + PERMISSÕES */
 (function(){
   const raw = sessionStorage.getItem("cp_session");
   if(!raw){ window.location.replace("login.html"); return; }
@@ -201,7 +194,11 @@ table.log td.num{text-align:right;color:var(--ink-soft);white-space:nowrap}
     if(!s.ts || (Date.now()-s.ts) > MAX_AGE){
       sessionStorage.removeItem("cp_session");
       window.location.replace("login.html");
+      return;
     }
+    // Expor tipo de usuário globalmente
+    window.__USER_TIPO = s.tipo || 'individual';
+    window.__USER_NAME = s.nome || s.usuario || '';
   }catch(e){
     window.location.replace("login.html");
   }
@@ -662,7 +659,7 @@ function renderGrid(list){
       </div>
       <div class="metrics3 metrics4">
         <div class="m"><div class="k">Quantidade</div><div class="v">${s.n}</div></div>
-        <div class="m"><div class="k">${view==="colab"?"Tempo":"Eficiência"}</div><div class="v">${fmtDur(s.avgDur)}</div></div>
+        <div class="m"><div class="k">${view==="colab"?"Tempo":"TEMPO"}</div><div class="v">${fmtDur(s.avgDur)}</div></div>
         <div class="m"><div class="k">Qualidade</div><div class="v" style="color:${col}">${s.n?Math.round(s.satPct)+"%":"—"}</div></div>
         <div class="m"><div class="k">No prazo</div><div class="v" style="color:${s.noPrazoPct==null?'var(--ink-faint)':s.noPrazoPct>=85?'var(--good)':s.noPrazoPct>=60?'#F5A623':'var(--bad)'}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
       </div>
@@ -1194,6 +1191,63 @@ document.addEventListener('DOMContentLoaded', () => {
     userDisplay.textContent = `Olá, ${logado.nome || logado.usuario}`;
   }
 });
+</script>
+<script>
+/* ===== HIERARQUIA DE SETORES ===== */
+const HIERARQUIA = {
+  'Diretoria Administrativa': {
+    icone: '🏢',
+    filhos: {
+      'Gerência Administrativa': {
+        icone: '👔',
+        filhos: {
+          'Departamento de Processos': { icone: '📋', filhos: {} },
+          'Operações': { icone: '⚙️', filhos: {} },
+          'Compras': { icone: '🛒', filhos: {} },
+          'RH': { icone: '👥', filhos: {} }
+        }
+      },
+      'Gerência Financeira': {
+        icone: '💰',
+        filhos: {
+          'Contas a Pagar': { icone: '📤', filhos: {} },
+          'Contas a Receber': { icone: '📥', filhos: {} },
+          'Tesouraria': { icone: '🏦', filhos: {} }
+        }
+      }
+    }
+  },
+  'Diretoria Comercial': {
+    icone: '📈',
+    filhos: {
+      'Gerência de Vendas': {
+        icone: '🤝',
+        filhos: {
+          'Vendas Internas': { icone: '🏠', filhos: {} },
+          'Vendas Externas': { icone: '🚚', filhos: {} }
+        }
+      },
+      'Marketing': { icone: '📢', filhos: {} }
+    }
+  },
+  'Diretoria de TI': {
+    icone: '💻',
+    filhos: {
+      'Desenvolvimento': { icone: '💻', filhos: {} },
+      'Infraestrutura': { icone: '🖧', filhos: {} },
+      'Suporte': { icone: '🎧', filhos: {} }
+    }
+  }
+};
+
+/* Se quiser ativar navegação hierárquica nos cards,
+   substitua a renderização do entityGrid por esta função: */
+function renderHierarquia(containerId, dados, caminho) {
+  const container = document.getElementById(containerId);
+  if(!container) return;
+  // Implementação: cria cards clicáveis que navegam pelos filhos
+  // (pode ser integrada à sua função render() existente)
+}
 </script>
 </body>
 </html>

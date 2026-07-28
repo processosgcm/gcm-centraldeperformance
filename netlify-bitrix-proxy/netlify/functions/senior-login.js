@@ -132,7 +132,8 @@ export default async (req) => {
       body: buildEnvelope(usuario, senha),
     });
 
-    const xml = await upstream.text();
+   const xml = await upstream.text();
+console.log("XML bruto da Senior:", xml);   // ← linha temporária de diagnóstico
 
     if (!upstream.ok) {
       console.error("Senior SOAP HTTP", upstream.status, xml.slice(0, 500));

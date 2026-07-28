@@ -139,23 +139,23 @@ export default async (req) => {
       return json({ autenticado: false, mensagem: "Serviço de autenticação indisponível no momento." }, 502);
     }
 
-    const erroExecucao = extractTag(xml, "erroExecucao");
-    if (erroExecucao) {
-      return json({ autenticado: false, mensagem: erroExecucao }, 200);
-    }
+const erroExecucao = extractTag(xml, "erroExecucao");
 
-    const gcmAutenticadoRaw = (extractTag(xml, "gcmAutenticado") || "").toLowerCase();
-    const autenticado = ["true", "s", "sim", "1"].includes(gcmAutenticadoRaw);
-    const email = extractTag(xml, "email");
-    const mensagemRetorno = extractTag(xml, "mensagem");
-    const abrangencias = extractAbrangencias(xml);
+const gcmAutenticadoRaw = (extractTag(xml, "gcmAutenticado") || "").toLowerCase();
+const autenticado = ["true", "s", "sim", "1"].includes(gcmAutenticadoRaw);
+const email = extractTag(xml, "email");
+const mensagemRetorno = extractTag(xml, "mensagem");
+const abrangencias = extractAbrangencias(xml);
 
-    return json({
-      autenticado,
-      email: autenticado ? email : null,
-      abrangencias: autenticado ? abrangencias : [],
-      mensagem: mensagemRetorno || (autenticado ? "Login válido" : "Usuário ou senha inválidos"),
-    });
+return json({
+  autenticado,
+  email: autenticado ? email : null,
+  abrangencias: autenticado ? abrangencias : [],
+  mensagem:
+    mensagemRetorno ||
+    erroExecucao ||
+    (autenticado ? "Login válido" : "Usuário ou senha inválidos"),
+});
   } catch (err) {
     console.error("Senior SOAP falhou:", err);
     return json({ autenticado: false, mensagem: "Não foi possível contatar o serviço de autenticação (rede/firewall)." }, 502);

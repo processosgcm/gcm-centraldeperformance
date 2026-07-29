@@ -112,6 +112,10 @@ button{font-family:inherit}
 .breadcrumb .crumb:last-child:hover{background:none}
 .breadcrumb .sep{color:var(--ink-faint);font-size:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(276px,1fr));gap:12px}
+.colab-row{display:flex;align-items:center;gap:12px;padding:9px 14px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer;background:#fff;transition:.12s}
+.colab-row:hover{border-color:var(--brand-3)}
+.colab-row.on{border-color:var(--brand);box-shadow:0 0 0 1.5px var(--brand) inset}
+.colab-mini{font-size:12px;color:var(--ink-soft);white-space:nowrap;flex:0 0 auto;min-width:76px;text-align:right}
 .entity{border:1px solid var(--line);border-radius:13px;padding:15px 16px;cursor:pointer;transition:.15s;background:#fff}
 .entity:hover{border-color:var(--brand-3);transform:translateY(-2px);box-shadow:0 8px 20px -12px rgba(18,23,43,.22)}
 .entity.on{border-color:var(--brand);box-shadow:0 0 0 1.5px var(--brand) inset}
@@ -129,7 +133,7 @@ button{font-family:inherit}
 
 .tablewrap{overflow-x:auto}
 table.log{width:100%;border-collapse:collapse;font-size:12.6px}
-table.log thead th{position:sticky;top:60px;z-index:5;background:var(--card);text-align:left;font-size:10.8px;
+table.log thead th{background:var(--card);text-align:left;font-size:10.8px;
   text-transform:uppercase;letter-spacing:.06em;color:var(--ink-faint);padding:10px;border-bottom:1px solid var(--line);
   white-space:nowrap;cursor:pointer;font-weight:700;user-select:none}
 table.log thead th:hover{color:var(--brand)}
@@ -178,7 +182,6 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
 @media (max-width:640px){
   .topbar{padding:12px 14px} .statusbar{padding:0 14px 10px}
   .wrap{padding:14px 14px 60px} .kpis{grid-template-columns:1fr}
-  table.log thead th{top:0}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -711,20 +714,57 @@ function renderGrid(list){
 }
 
 /* ---- visão "Por colaborador": inalterada, lista plana clicável ---- */
+let colabQuery="";
 function renderColabGrid(list){
   el("breadcrumb").innerHTML="";
   el("gridTitle").textContent="Colaboradores";
+  const box=el("grid");
+  box.innerHTML=`<div style="grid-column:1/-1">
+    <input type="text" id="colabSearchInput" placeholder="Buscar colaborador pelo nome…" value="${esc(colabQuery)}"
+      style="width:100%;border:1px solid var(--line);border-radius:9px;padding:10px 13px;font-size:13.5px;margin-bottom:12px;font-family:inherit">
+    <div id="colabList"></div>
+  </div>`;
+  const input=el("colabSearchInput");
+  input.addEventListener("input",debounce(()=>{ colabQuery=input.value; renderColabList(list); },150));
+  renderColabList(list);
+}
+function renderColabList(list){
   const g=new Map();
   list.forEach(t=>{
     const key=t.responsavel||"Sem responsável";
     if(!g.has(key)) g.set(key,{label:key,items:[]});
     g.get(key).items.push(t);
   });
-  const rows=[...g.entries()].sort((a,b)=>b[1].items.length-a[1].items.length);
-  el("gridHint").textContent=`${rows.length} colaborador(es) · clique para filtrar`;
-  const box=el("grid");
-  if(!rows.length){ box.innerHTML=`<div class="thin">Nenhum registro no filtro atual.</div>`; return; }
-  renderPersonCards(box, rows, {clickable:true, tempoLabel:"Tempo"});
+  let rows=[...g.entries()].sort((a,b)=>b[1].items.length-a[1].items.length);
+  const totalAntes=rows.length;
+  const q=norm(colabQuery);
+  if(q) rows=rows.filter(([,grp])=>norm(grp.label).includes(q));
+  el("gridHint").textContent=`${rows.length} colaborador(es)${q?` de ${totalAntes}`:""} · clique para filtrar`;
+  const listBox=el("colabList");
+  if(!rows.length){ listBox.innerHTML=`<div class="thin">Nenhum colaborador encontrado com esse nome.</div>`; return; }
+  listBox.innerHTML=rows.map(([key,grp])=>{
+    const s=stats(grp.items);
+    const pc=s.noPrazoPct==null?"#9AA0B4":s.noPrazoPct>=85?"#12B76A":s.noPrazoPct>=60?"#A5690B":"#F04438";
+    const fora=!grp.items[0].achado;
+    return `<div class="colab-row ${activeEntity===key?"on":""}" data-key="${esc(key)}" tabindex="0" role="button">
+      <div class="avatar" style="flex:0 0 30px;width:30px;height:30px;font-size:11px">${esc(initials(grp.label))}</div>
+      <div class="nm" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${esc(grp.label)}${fora?` <span class="flag">fora do organograma</span>`:""}</div>
+      <div class="colab-mini">${s.n} tarefa(s)</div>
+      <div class="colab-mini">${fmtDur(s.avgExec)}</div>
+      <div class="colab-mini" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"} no prazo</div>
+      <div class="colab-mini" style="font-weight:700">${s.satPct==null?"—":Math.round(s.satPct)+"%"} satisf.</div>
+    </div>`;
+  }).join("");
+  listBox.querySelectorAll(".colab-row").forEach(rowEl=>{
+    const act=()=>{
+      const k=rowEl.dataset.key;
+      activeEntity=activeEntity===k?null:k;
+      el("fEntity").value=activeEntity||"";
+      rowLimit=100; render();
+    };
+    rowEl.addEventListener("click",act);
+    rowEl.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); act(); } });
+  });
 }
 
 /* ---- visão "Por setor": navega a árvore real do Bitrix ---- */
@@ -739,7 +779,7 @@ function renderBreadcrumb(){
   if(!bar) return;
   const chain = activeEntity==null ? [] : [...deptChainIds(activeEntity)].reverse();
   const crumbs = [`<button data-id="" class="crumb">Setores</button>`]
-    .concat(chain.map(id=>`<button data-id="${esc(id)}" class="crumb">${esc(deptLabel(id))}</button>`));
+    .concat(chain.map(id=>`<button data-id="${esc(id)}" class="crumb" title="ID: ${esc(id)}">${esc(deptLabel(id))}</button>`));
   bar.innerHTML = crumbs.join(`<span class="sep">›</span>`);
   bar.querySelectorAll(".crumb").forEach(b=>b.addEventListener("click",()=>{
     activeEntity = b.dataset.id || null;
@@ -765,7 +805,20 @@ function renderSectorHierarchy(list){
     // nó-folha: não há mais subdepartamentos com tarefas — mostra as pessoas
     const pessoas=new Set(list.map(t=>t.responsavel||"—")).size;
     el("gridHint").textContent = list.length ? `${pessoas} colaborador(es) neste setor` : "nenhum registro";
-    if(!list.length){ box.innerHTML=`<div class="thin">Nenhuma tarefa neste setor com os filtros atuais.</div>`; return; }
+    if(!list.length){
+      const dica = period ? ` Experimente trocar o período no topo (atualmente "${{7:"7 dias",30:"30 dias",90:"90 dias"}[period]}") para "Tudo" — este setor pode só ter tarefas concluídas fora dessa janela.` : "";
+      // diagnóstico: existe tarefa com o MESMO NOME de setor só que em outro ID?
+      // (departamento duplicado no Bitrix — organograma reestruturado deixou um "fantasma")
+      const nomeAtual=deptLabel(activeEntity);
+      const duplicata=prepare().find(t=>t.setorId!==activeEntity && norm(t.setorNome)===norm(nomeAtual));
+      const aviso=duplicata
+        ? `<br><br><b style="color:var(--warn-ink)">⚠ Possível departamento duplicado no Bitrix:</b> existe(m) tarefa(s) reais com setor de mesmo nome ("${esc(nomeAtual)}"), mas cadastradas num departamento com ID diferente
+           (<code title="ID deste nó da hierarquia">${esc(activeEntity)}</code> aqui vs <code title="ID onde a tarefa realmente está lotada">${esc(duplicata.setorId)}</code> na tarefa real).
+           Provavelmente há dois registros de departamento com esse mesmo nome no Bitrix — vale conferir em <b>CRM → Empresa → Estrutura</b>.`
+        : "";
+      box.innerHTML=`<div class="thin">Nenhuma tarefa neste setor com os filtros atuais.${dica}${aviso}</div>`;
+      return;
+    }
     const g=new Map();
     list.forEach(t=>{ const k=t.responsavel||"Sem responsável"; if(!g.has(k)) g.set(k,{label:k,items:[]}); g.get(k).items.push(t); });
     renderPersonCards(box, [...g.entries()].sort((a,b)=>b[1].items.length-a[1].items.length), {clickable:false, tempoLabel:"Tempo"});
@@ -776,7 +829,7 @@ function renderSectorHierarchy(list){
   box.innerHTML = rows.map(([key,grp])=>{
     const s=stats(grp.items);
     const pc=s.noPrazoPct==null?"#9AA0B4":s.noPrazoPct>=85?"#12B76A":s.noPrazoPct>=60?"#A5690B":"#F04438";
-    return `<div class="entity" data-key="${esc(key)}" tabindex="0" role="button">
+    return `<div class="entity" data-key="${esc(key)}" tabindex="0" role="button" title="ID: ${esc(key)}">
       <div class="entity-hd">
         <div class="avatar">${esc(initials(grp.label))}</div>
         <div style="min-width:0;flex:1">
@@ -880,7 +933,11 @@ function renderLog(list){
     ?`${nf.format(arr.length)} registro(s)${arr.length>shown.length?` · exibindo ${nf.format(shown.length)}`:""} · clique no cabeçalho para ordenar`
     :"nenhum registro";
   const wrap=el("logWrap");
-  if(!arr.length){ wrap.innerHTML=`<div class="thin">Nenhuma tarefa concluída corresponde aos filtros atuais.</div>`; return; }
+  if(!arr.length){
+    const dica = period ? ` Experimente trocar o período no topo (atualmente "${({7:"7 dias",30:"30 dias",90:"90 dias"})[period]}") para "Tudo".` : "";
+    wrap.innerHTML=`<div class="thin">Nenhuma tarefa concluída corresponde aos filtros atuais.${dica}</div>`;
+    return;
+  }
   wrap.innerHTML=`<table class="log"><thead><tr>${
     COLS.map(c=>`<th class="${c.right?"right":""}" data-k="${c.k}">${c.t}${sortKey===c.k?(sortDir>0?" ▲":" ▼"):""}</th>`).join("")
   }</tr></thead><tbody>${shown.map(t=>{
@@ -892,7 +949,7 @@ function renderLog(list){
     const dp=fmtParts(t.conclusao);
     return `<tr>
       <td><div class="tk">${esc(t.tarefa||"(sem título)")}<small>#${esc(t.idTarefa||"—")}</small></div></td>
-      <td class="who">${esc(t.setorNome)}</td>
+      <td class="who" title="ID do departamento: ${esc(t.setorId)}">${esc(t.setorNome)}</td>
       <td class="who">${esc(t.responsavel||"—")}${t.cargo?`<small>${esc(t.cargo)}</small>`:""}</td>
       <td class="who">${esc(t.criador||"—")}${t.respondente?`<small>aval: ${esc(t.respondente)}</small>`:""}</td>
       <td>${aval}</td>

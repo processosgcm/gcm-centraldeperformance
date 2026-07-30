@@ -67,6 +67,7 @@ button{font-family:inherit}
 .cmp.down{color:#730010;background:var(--bad-bg)}
 .cmp.flat{color:var(--ink-faint);background:var(--neutral-bg)}
 .note{font-size:11px;color:var(--ink-faint)}
+.note.hastip{cursor:help}
 .note.warn{color:var(--warn-ink);cursor:help}
 .spark{position:absolute;right:0;bottom:0;opacity:.5;pointer-events:none}
 
@@ -119,6 +120,7 @@ button{font-family:inherit}
 .colab-row:hover{border-color:var(--brand-3)}
 .colab-row.on{border-color:var(--brand);box-shadow:0 0 0 1.5px var(--brand) inset}
 .colab-mini{font-size:12px;color:var(--ink-soft);white-space:nowrap;flex:0 0 auto;min-width:76px;text-align:right}
+.colab-mini.hastip{cursor:help}
 .entity{border:1px solid var(--line);border-radius:13px;padding:15px 16px;cursor:pointer;transition:.15s;background:#fff}
 .entity:hover{border-color:var(--brand-3);transform:translateY(-2px);box-shadow:0 8px 20px -12px rgba(18,23,43,.22)}
 .entity.on{border-color:var(--brand);box-shadow:0 0 0 1.5px var(--brand) inset}
@@ -132,6 +134,7 @@ button{font-family:inherit}
   font-weight:700;text-transform:uppercase;letter-spacing:.04em}
 .mgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:14px;padding-top:13px;border-top:1px solid var(--line-soft)}
 .mgrid .k{font-size:9.5px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+.mgrid .k.hastip{cursor:help;border-bottom:1px dotted var(--ink-faint)}
 .mgrid .v{font-family:'Inter';font-weight:700;font-size:14.5px;font-weight:700;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .tablewrap{overflow-x:auto}
@@ -153,6 +156,7 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
 .pill.good{background:var(--good-bg);color:#00491B}
 .pill.bad{background:var(--bad-bg);color:#730010}
 .pill.warn{background:var(--warn-bg);color:var(--warn-ink)}
+.pill.info{background:#E3EEF9;color:var(--brand-3)}
 .pill.none{background:var(--neutral-bg);color:var(--ink-soft)}
 .pill.hastip{cursor:help}
 .dt{display:inline-flex;flex-direction:column;align-items:flex-end;line-height:1.35}
@@ -279,7 +283,16 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
   <div class="chipbar" id="chipBar"></div>
 
   <section class="panel">
-    <div class="panel-hd"><h2>Conclusões ao longo do tempo</h2><div class="gap"></div><span class="hint" id="trendHint">—</span></div>
+    <div class="panel-hd">
+      <h2>Conclusões ao longo do tempo</h2>
+      <div class="gap"></div>
+      <div class="seg sm" id="trendGranSeg" style="display:none">
+        <button data-g="dia" class="on">Dia</button>
+        <button data-g="mes">Mês</button>
+        <button data-g="ano">Ano</button>
+      </div>
+      <span class="hint" id="trendHint">—</span>
+    </div>
     <div class="panel-bd">
       <div class="trend" id="trend"></div>
       <div class="legend">
@@ -328,6 +341,7 @@ let PREPARED=null;               /* cache de prepare() */
 let metaFetched=new Set();       /* tarefas cujo prazo já foi buscado */
 let bitrixOK=false;
 let view="setor",period=7;
+let trendGran="dia"; // dia|mes|ano — só usado quando period===0 ("Tudo")
 let activeEntity=null;
 let sortKey="conclusao",sortDir=-1;
 let rowLimit=100;
@@ -488,89 +502,73 @@ function findUser(name){
   const c=IDX_FIRST[t[0]];
   return (c&&c.length===1)?c[0]:null;
 }
-/* Mescla departamentos duplicados: se dois ou mais registros do Bitrix têm
-   exatamente o mesmo nome (normalizado, sem acento/maiúscula), tratamos como
-   o MESMO departamento — usando o de menor ID como "canônico" e redirecionando
-   os outros pra ele. Resolve o organograma reestruturado deixando departamentos
-   "fantasma" duplicados com o mesmo nome. */
-let DEPT_REDIRECT={};
-function canon(id){ return DEPT_REDIRECT[id] || id; }
-function mergeDuplicateDepts(depts){
-  const byName=new Map();
-  Object.values(depts).forEach(d=>{
-    const key=norm(d.NAME);
-    if(!byName.has(key)) byName.set(key,[]);
-    byName.get(key).push(d);
+/* IDENTIDADE POR NOME: "nome igual = mesmo departamento", ponto final.
+   Em vez de tentar casar IDs numéricos do Bitrix (frágil — sofre com
+   string vs número, e com departamentos duplicados de propósito no
+   organograma), cada departamento é identificado pelo seu NOME
+   normalizado. Isso funde automaticamente qualquer duplicidade e nunca
+   sofre o tipo de bug "ID 25 !== ID 25" (comparação de tipos diferentes). */
+const SENTINEL_NAMES={__off__:"Organograma indisponível",__nf__:"Não localizado no Bitrix",__nd__:"Sem departamento"};
+let NAME_KEY_DISPLAY={};
+function buildNameKeyDisplay(){
+  NAME_KEY_DISPLAY={};
+  // ordena por ID pra sempre escolher a MESMA grafia como "oficial" entre duplicatas
+  const sorted=Object.values(DEPTS).sort((a,b)=>Number(a.ID)-Number(b.ID));
+  sorted.forEach(d=>{
+    const k="n:"+norm(d.NAME);
+    if(!NAME_KEY_DISPLAY[k]) NAME_KEY_DISPLAY[k]=d.NAME;
   });
-  const redirect={};
-  byName.forEach(list=>{
-    if(list.length<2) return;
-    const sorted=[...list].sort((a,b)=>Number(a.ID)-Number(b.ID));
-    const canonical=sorted[0].ID;
-    sorted.slice(1).forEach(d=>{ redirect[d.ID]=canonical; });
-  });
-  return redirect;
 }
-function topDept(id){
-  let cur=DEPTS[canon(id)]; if(!cur) return null; let g=0;
-  while(cur.PARENT&&DEPTS[canon(cur.PARENT)]&&DEPTS[canon(cur.PARENT)].PARENT&&g++<25) cur=DEPTS[canon(cur.PARENT)];
-  return cur;
+function deptNameKey(realId){
+  const d=DEPTS[String(realId)];
+  return d ? "n:"+norm(d.NAME) : String(realId);
 }
-/* Cadeia de departamentos da folha até a raiz (inclui o próprio id, já
-   canonicalizado). Para ids "sentinela" (não localizado / sem depto /
-   organograma off), DEPTS[id] não existe, então a cadeia é só [id]. */
-function deptChainIds(id){
-  id=canon(id);
-  const chain=[]; let cur=DEPTS[id], curId=id, g=0;
+function deptLabel(key){ return NAME_KEY_DISPLAY[key] || SENTINEL_NAMES[key] || key; }
+/* Cadeia de departamentos da folha até a raiz, já convertida pra chaves de
+   nome (uma por nível). Recebe o ID REAL do Bitrix (pra poder percorrer os
+   PARENTs de verdade); devolve chaves de nome, imunes a duplicidade de ID. */
+function deptChainIds(realId){
+  realId=String(realId);
+  if(!DEPTS[realId]) return [realId]; // sentinela — sem hierarquia real
+  const chain=[]; let cur=DEPTS[realId], curId=realId, g=0;
   while(true){
-    chain.push(curId);
-    if(!cur||!cur.PARENT||!DEPTS[canon(cur.PARENT)]||g++>25) break;
-    curId=canon(cur.PARENT); cur=DEPTS[curId];
+    chain.push(deptNameKey(curId));
+    const parentId=cur.PARENT?String(cur.PARENT):null;
+    if(!parentId||!DEPTS[parentId]||g++>25) break;
+    curId=parentId; cur=DEPTS[curId];
   }
   return chain;
 }
-const SENTINEL_NAMES={__off__:"Organograma indisponível",__nf__:"Não localizado no Bitrix",__nd__:"Sem departamento"};
-function deptLabel(id){ id=canon(id); return DEPTS[id]?.NAME || SENTINEL_NAMES[id] || id; }
-/* Retorna o departamento IMEDIATO da pessoa (folha da árvore), já
-   canonicalizado — a navegação por hierarquia é quem sobe/desce os níveis. */
+/* Retorna o departamento IMEDIATO da pessoa (folha da árvore), já como
+   chave de nome — a navegação por hierarquia sobe/desce os níveis por cima
+   dessas chaves, nunca por ID bruto. */
 function sectorOf(u){
-  if(!bitrixOK) return {id:"__off__",name:"Organograma indisponível"};
-  if(!u) return {id:"__nf__",name:"Não localizado no Bitrix"};
-  const ids=(u.UF_DEPARTMENT||[]).map(canon).filter(id=>DEPTS[id]);
-  if(!ids.length) return {id:"__nd__",name:"Sem departamento"};
-  return {id:ids[0],name:DEPTS[ids[0]].NAME};
+  if(!bitrixOK) return {id:"__off__",name:"Organograma indisponível",realId:null};
+  if(!u) return {id:"__nf__",name:"Não localizado no Bitrix",realId:null};
+  const rawIds=(u.UF_DEPARTMENT||[]).map(String);
+  const realId=rawIds.find(id=>DEPTS[id]);
+  if(!realId) return {id:"__nd__",name:"Sem departamento",realId:null};
+  return {id:deptNameKey(realId), name:DEPTS[realId].NAME, realId};
 }
 
 /* ═════════ PRAZO ═════════
-   prazo em dias = criação → deadline (só úteis se MATCH_WORK_TIME=Y);
-   corte "rápida" = 20% do prazo (ou 20% das horas trabalhadas, 8h/dia, se 20% < 1 dia);
-   conclusão da tarefa = data_envio. */
-const isWeekend=d=>d.getDay()===0||d.getDay()===6;
-const dateOnly=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
-function daysBetween(a0,b0,biz){
-  const a=dateOnly(a0),b=dateOnly(b0);
-  if(!biz) return Math.round((b-a)/86400000);
-  let cur=new Date(a),c=0;
-  while(cur<b){ cur.setDate(cur.getDate()+1); if(!isWeekend(cur)) c++; }
-  return c;
-}
-function addDays(start,days,biz){
-  if(!biz) return new Date(start.getTime()+days*86400000);
-  const whole=Math.floor(days),frac=days-whole;
-  let cur=new Date(start),added=0;
-  while(added<whole){ cur.setDate(cur.getDate()+1); if(!isWeekend(cur)) added++; }
-  return frac>0?new Date(cur.getTime()+frac*86400000):cur;
-}
-function classifySLA(created,deadline,done,biz){
+   Classificação pelo % do tempo total (criação → prazo) já consumido até a
+   conclusão (data_envio):
+     ≤30%        → Rápida
+     31% a 90%   → Normal
+     91% a 100%  → No prazo
+     >100%       → Atrasada */
+function classifySLA(created,deadline,done){
   if(!created||!deadline||!done) return null;
-  const dias=daysBetween(created,deadline,biz);
-  if(dias<=0) return done<=deadline?"regular":"atrasada";
-  const thr=dias*0.2;
-  const cutoff=thr>=1?addDays(created,Math.round(thr),biz)
-                     :new Date(created.getTime()+dias*8*0.2*3600000);
-  if(done<=cutoff) return "rapida";
-  if(done<=deadline) return "regular";
-  return "atrasada";
+  const total=deadline-created;
+  if(total<=0) return {status: done<=deadline?"no_prazo":"atrasada", pct:null};
+  const pct=((done-created)/total)*100;
+  let status;
+  if(pct<=30) status="rapida";
+  else if(pct<=90) status="normal";
+  else if(pct<=100) status="no_prazo";
+  else status="atrasada";
+  return {status, pct};
 }
 
 /* ═════════ PREPARO (com cache) ═════════
@@ -584,17 +582,18 @@ function prepare(){
     const meta=TASK_META[String(r.id_tarefa)];
     const created=meta?toDate(meta.createdDate):null;
     const deadline=meta?toDate(meta.deadline):null;
-    const biz=meta?meta.matchWorkTime==="Y":false;
+    const slaResult=deadline?classifySLA(created||dEnv,deadline,dEnv):null;
     return {
       idTarefa:r.id_tarefa, tarefa:r.tarefa,
       criador:r.proprietario_nome, responsavel:r.responsavel_nome, respondente:r.nome_respondente,
       justificativa:r.justificativa,
-      setorId:s.id, setorNome:s.name, deptChain:deptChainIds(s.id), cargo:u?(u.WORK_POSITION||""):"", achado:!!u,
+      setorId:s.id, setorNome:s.name, deptChain:s.realId?deptChainIds(s.realId):[s.id], cargo:u?(u.WORK_POSITION||""):"", achado:!!u,
       rated, sat: rated?Number(r.avaliacao)===1:true,
-      conclusao:dEnv, dataResposta:dRes, deadline,
+      conclusao:dEnv, dataResposta:dRes, deadline, criado:created,
       execMs:(created&&dEnv)?(dEnv-created):null,   /* duração real do trabalho */
       avalMs:(dEnv&&dRes)?(dRes-dEnv):null,          /* latência da avaliação */
-      sla: deadline?classifySLA(created||dEnv,deadline,dEnv,biz):null
+      sla: slaResult?slaResult.status:null,
+      slaPct: slaResult?slaResult.pct:null
     };
   });
   return PREPARED;
@@ -605,13 +604,16 @@ function stats(list){
   const n=list.length, sat=list.filter(t=>t.sat).length;
   const ex=list.map(t=>t.execMs).filter(v=>v!=null);
   const cs=list.filter(t=>t.sla);
+  const atrasadas=cs.filter(t=>t.sla==="atrasada").length;
   return {
-    n, insat:n-sat, satPct:n?(sat/n)*100:null,
+    n, sat, insat:n-sat, satPct:n?(sat/n)*100:null,
     avgExec: ex.length?ex.reduce((a,b)=>a+b,0)/ex.length:null,
     slaN:cs.length,
     rapidas:cs.filter(t=>t.sla==="rapida").length,
-    atrasadas:cs.filter(t=>t.sla==="atrasada").length,
-    noPrazoPct: cs.length?(cs.filter(t=>t.sla!=="atrasada").length/cs.length)*100:null
+    normais:cs.filter(t=>t.sla==="normal").length,
+    noPrazo:cs.filter(t=>t.sla==="no_prazo").length,
+    atrasadas,
+    noPrazoPct: cs.length?((cs.length-atrasadas)/cs.length)*100:null
   };
 }
 
@@ -676,19 +678,20 @@ function sparkline(list){
 }
 function renderKPIs(cur,prev){
   const c=stats(cur),p=stats(prev), semPrazo=cur.length-c.slaN;
+  const slaFormula="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada.";
   const cards=[
     {k:"Concluídas",v:nf.format(c.n),spark:sparkline(cur),
      foot:trendChip(c.n,period?p.n:null,true,d=>nf.format(Math.round(d))+" tarefas")},
-    {k:"Satisfação",v:c.satPct==null?"—":Math.round(c.satPct)+"%",
-     foot:trendChip(c.satPct,period?p.satPct:null,true,d=>d.toFixed(1)+" p.p.")
-          +`<span class="note">${nf.format(c.insat)} insatisfeita(s)</span>`},
     {k:"Entregas no prazo",v:c.noPrazoPct==null?"—":Math.round(c.noPrazoPct)+"%",
      foot:trendChip(c.noPrazoPct,period?p.noPrazoPct:null,true,d=>d.toFixed(1)+" p.p.")
-          +`<span class="note">${c.rapidas} rápida(s) · ${c.atrasadas} atrasada(s)</span>`
+          +`<span class="note hastip" data-tip="${esc(slaFormula)}">${c.rapidas} rápida(s) · ${c.normais} normal(is) · ${c.noPrazo} no prazo · ${c.atrasadas} atrasada(s)</span>`
           +(semPrazo?`<span class="note warn" data-tip="Estas tarefas não têm prazo (DEADLINE) cadastrado no Bitrix, então ficam fora deste indicador.">⚠ ${nf.format(semPrazo)} sem prazo</span>`:"")},
     {k:"Tempo médio de execução",v:fmtDur(c.avgExec),
      foot:trendChip(c.avgExec,period?p.avgExec:null,false,d=>fmtDur(d))
-          +`<span class="note" data-tip="Da criação da tarefa no Bitrix até a conclusão (data de envio).">criação → conclusão</span>`}
+          +`<span class="note" data-tip="Da criação da tarefa no Bitrix até a conclusão (data de envio).">criação → conclusão</span>`},
+    {k:"Satisfação",v:c.satPct==null?"—":Math.round(c.satPct)+"%",
+     foot:trendChip(c.satPct,period?p.satPct:null,true,d=>d.toFixed(1)+" p.p.")
+          +`<span class="note">${nf.format(c.sat)} satisfeita(s)</span>`}
   ];
   el("kpis").innerHTML=cards.map(x=>`<div class="kpi">${x.spark||""}
       <div class="k">${x.k}</div><div class="v num">${x.v}</div><div class="foot">${x.foot}</div></div>`).join("");
@@ -697,9 +700,29 @@ function renderKPIs(cur,prev){
 
 /* ═════════ TENDÊNCIA ═════════ */
 function renderTrend(list){
-  const days=period||30, buckets=[];
+  const seg=el("trendGranSeg");
+  seg.style.display = period ? "none" : "flex";
+  if(!period && trendGran==="mes") return renderTrendMensal(list);
+  if(!period && trendGran==="ano") return renderTrendAnual(list);
+  return renderTrendDiario(list);
+}
+function renderTrendDiario(list){
+  let days;
+  if(period){ days=period; }
+  else{
+    // "Tudo": abrange do dia mais antigo ao mais novo encontrado nos dados
+    const datas=list.map(t=>t.conclusao).filter(Boolean);
+    if(!datas.length) days=30;
+    else{
+      const min=new Date(Math.min(...datas)), max=new Date(Math.max(...datas));
+      days=Math.max(1, Math.round((dateOnly(max)-dateOnly(min))/86400000)+1);
+    }
+  }
+  const buckets=[];
+  const base=list.map(t=>t.conclusao).filter(Boolean);
+  const endRef = period ? new Date() : (base.length?new Date(Math.max(...base)):new Date());
   for(let i=days-1;i>=0;i--){
-    const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-i);
+    const d=new Date(endRef); d.setHours(0,0,0,0); d.setDate(d.getDate()-i);
     buckets.push({key:localKey(d),date:d,sat:0,insat:0,none:0});
   }
   const map={}; buckets.forEach(b=>map[b.key]=b);
@@ -711,7 +734,7 @@ function renderTrend(list){
     if(!t.rated) b.none++; else if(t.sat) b.sat++; else b.insat++;
   });
   const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
-  el("trendHint").textContent=`últimos ${days} dias · pico de ${peak} no dia`+(fora?` · ${nf.format(fora)} fora da janela`:"");
+  el("trendHint").textContent=`${period?`últimos ${days} dias`:`todo o período · ${days} dia(s)`} · pico de ${peak} no dia`+(fora?` · ${nf.format(fora)} fora da janela`:"");
   const every=buckets.length<=31?1:Math.ceil(buckets.length/12);
   el("trend").innerHTML=buckets.map((b,i)=>{
     const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
@@ -723,6 +746,72 @@ function renderTrend(list){
         ${b.sat?`<div class="tseg" style="height:${h(b.sat)}px;background:#00973A"></div>`:""}
       </div>
       <div class="tlab">${i%every===0?`${String(b.date.getDate()).padStart(2,"0")}/${String(b.date.getMonth()+1).padStart(2,"0")}`:"&nbsp;"}</div>
+    </div>`;
+  }).join("");
+  bindTips(el("trend"));
+}
+function renderTrendMensal(list){
+  const datas=list.map(t=>t.conclusao).filter(Boolean);
+  const map={};
+  if(datas.length){
+    const min=new Date(Math.min(...datas)), max=new Date(Math.max(...datas));
+    let cur=new Date(min.getFullYear(),min.getMonth(),1);
+    const last=new Date(max.getFullYear(),max.getMonth(),1);
+    while(cur<=last){
+      const key=`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}`;
+      map[key]={key,year:cur.getFullYear(),month:cur.getMonth(),sat:0,insat:0,none:0};
+      cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);
+    }
+  }
+  let fora=0;
+  list.forEach(t=>{
+    if(!t.conclusao) return;
+    const d=t.conclusao, key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+    const b=map[key];
+    if(!b){ fora++; return; }
+    if(!t.rated) b.none++; else if(t.sat) b.sat++; else b.insat++;
+  });
+  const buckets=Object.values(map).sort((a,b)=>a.key.localeCompare(b.key));
+  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
+  el("trendHint").textContent=`todo o período · ${buckets.length} mês(es) · pico de ${peak} no mês`+(fora?` · ${nf.format(fora)} fora da janela`:"");
+  const MESES=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
+  const every=buckets.length<=24?1:Math.ceil(buckets.length/12);
+  el("trend").innerHTML=buckets.map((b,i)=>{
+    const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
+    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s), ${b.none} sem avaliação`:"";
+    return `<div class="tcol" data-tip="${MESES[b.month]}/${b.year} — ${tot} concluída(s)${det}">
+      <div class="tstack">
+        ${b.none?`<div class="tseg" style="height:${h(b.none)}px;background:#C3CADB"></div>`:""}
+        ${b.insat?`<div class="tseg" style="height:${h(b.insat)}px;background:#DE001A"></div>`:""}
+        ${b.sat?`<div class="tseg" style="height:${h(b.sat)}px;background:#00973A"></div>`:""}
+      </div>
+      <div class="tlab">${i%every===0?`${MESES[b.month]}/${String(b.year).slice(2)}`:"&nbsp;"}</div>
+    </div>`;
+  }).join("");
+  bindTips(el("trend"));
+}
+function renderTrendAnual(list){
+  const map={};
+  let fora=0;
+  list.forEach(t=>{
+    if(!t.conclusao){ return; }
+    const y=t.conclusao.getFullYear();
+    if(!map[y]) map[y]={year:y,sat:0,insat:0,none:0};
+    if(!t.rated) map[y].none++; else if(t.sat) map[y].sat++; else map[y].insat++;
+  });
+  const buckets=Object.values(map).sort((a,b)=>a.year-b.year);
+  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
+  el("trendHint").textContent=`todo o período · ${buckets.length} ano(s) · pico de ${peak} no ano`;
+  el("trend").innerHTML=buckets.map(b=>{
+    const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
+    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s), ${b.none} sem avaliação`:"";
+    return `<div class="tcol" data-tip="${b.year} — ${tot} concluída(s)${det}">
+      <div class="tstack">
+        ${b.none?`<div class="tseg" style="height:${h(b.none)}px;background:#C3CADB"></div>`:""}
+        ${b.insat?`<div class="tseg" style="height:${h(b.insat)}px;background:#DE001A"></div>`:""}
+        ${b.sat?`<div class="tseg" style="height:${h(b.sat)}px;background:#00973A"></div>`:""}
+      </div>
+      <div class="tlab">${b.year}</div>
     </div>`;
   }).join("");
   bindTips(el("trend"));
@@ -789,7 +878,7 @@ function renderColabList(list){
       <div class="nm" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${esc(grp.label)}${fora?` <span class="flag">fora do organograma</span>`:""}</div>
       <div class="colab-mini">${s.n} tarefa(s)</div>
       <div class="colab-mini">${fmtDur(s.avgExec)}</div>
-      <div class="colab-mini" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"} no prazo</div>
+      <div class="colab-mini hastip" style="color:${pc}" data-tip="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Este indicador conta tudo que NÃO é Atrasada.">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"} no prazo</div>
       <div class="colab-mini" style="font-weight:700">${s.satPct==null?"—":Math.round(s.satPct)+"%"} satisf.</div>
     </div>`;
   }).join("");
@@ -803,6 +892,7 @@ function renderColabList(list){
     rowEl.addEventListener("click",act);
     rowEl.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); act(); } });
   });
+  bindTips(listBox);
   fadeIn(listBox);
 }
 
@@ -818,7 +908,7 @@ function renderBreadcrumb(){
   if(!bar) return;
   const chain = activeEntity==null ? [] : [...deptChainIds(activeEntity)].reverse();
   const crumbs = [`<button data-id="" class="crumb">Setores</button>`]
-    .concat(chain.map(id=>`<button data-id="${esc(id)}" class="crumb" title="ID: ${esc(id)}">${esc(deptLabel(id))}</button>`));
+    .concat(chain.map(id=>`<button data-id="${esc(id)}" class="crumb">${esc(deptLabel(id))}</button>`));
   bar.innerHTML = crumbs.join(`<span class="sep">›</span>`);
   bar.querySelectorAll(".crumb").forEach(b=>b.addEventListener("click",()=>{
     activeEntity = b.dataset.id || null;
@@ -846,16 +936,7 @@ function renderSectorHierarchy(list){
     el("gridHint").textContent = list.length ? `${pessoas} colaborador(es) neste setor` : "nenhum registro";
     if(!list.length){
       const dica = period ? ` Experimente trocar o período no topo (atualmente "${{7:"7 dias",30:"30 dias",90:"90 dias"}[period]}") para "Tudo" — este setor pode só ter tarefas concluídas fora dessa janela.` : "";
-      // diagnóstico: existe tarefa com o MESMO NOME de setor só que em outro ID?
-      // (departamento duplicado no Bitrix — organograma reestruturado deixou um "fantasma")
-      const nomeAtual=deptLabel(activeEntity);
-      const duplicata=prepare().find(t=>t.setorId!==activeEntity && norm(t.setorNome)===norm(nomeAtual));
-      const aviso=duplicata
-        ? `<br><br><b style="color:var(--warn-ink)">⚠ Possível dpto duplicado no Bitrix:</b> existe(m) tarefa(s) reais com setor de mesmo nome ("${esc(nomeAtual)}"), mas cadastradas num dpto com ID diferente
-           (<code title="ID deste nó da hierarquia">${esc(activeEntity)}</code> aqui vs <code title="ID onde a tarefa realmente está lotada">${esc(duplicata.setorId)}</code> na tarefa real).
-           Provavelmente há dois registros de dpto com esse mesmo nome no Bitrix — vale conferir em <b>CRM → Empresa → Estrutura</b>.`
-        : "";
-      box.innerHTML=`<div class="thin">Nenhuma tarefa neste setor com os filtros atuais.${dica}${aviso}</div>`;
+      box.innerHTML=`<div class="thin">Nenhuma tarefa neste setor com os filtros atuais.${dica}</div>`;
       return;
     }
     const g=new Map();
@@ -869,7 +950,7 @@ function renderSectorHierarchy(list){
   box.innerHTML = rows.map(([key,grp])=>{
     const s=stats(grp.items);
     const pc=s.noPrazoPct==null?"#9AA0B4":s.noPrazoPct>=85?"#00973A":s.noPrazoPct>=60?"#BA560B":"#DE001A";
-    return `<div class="entity" data-key="${esc(key)}" tabindex="0" role="button" title="ID: ${esc(key)}">
+    return `<div class="entity" data-key="${esc(key)}" tabindex="0" role="button">
       <div class="entity-hd">
         <div class="avatar">${esc(initials(grp.label))}</div>
         <div style="min-width:0;flex:1">
@@ -880,8 +961,8 @@ function renderSectorHierarchy(list){
       </div>
       <div class="mgrid">
         <div><div class="k">Quantidade</div><div class="v">${nf.format(s.n)}</div></div>
-        <div><div class="k">Eficiência</div><div class="v">${fmtDur(s.avgExec)}</div></div>
-        <div><div class="k">No prazo</div><div class="v" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
+        <div><div class="k">Tempo</div><div class="v">${fmtDur(s.avgExec)}</div></div>
+        <div><div class="k hastip" data-tip="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Este indicador conta tudo que NÃO é Atrasada.">No prazo</div><div class="v" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
       </div></div>`;
   }).join("");
 
@@ -898,8 +979,8 @@ function renderSectorHierarchy(list){
       </div>
       <div class="mgrid">
         <div><div class="k">Quantidade</div><div class="v">${nf.format(s.n)}</div></div>
-        <div><div class="k">Eficiência</div><div class="v">${fmtDur(s.avgExec)}</div></div>
-        <div><div class="k">No prazo</div><div class="v">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
+        <div><div class="k">Tempo</div><div class="v">${fmtDur(s.avgExec)}</div></div>
+        <div><div class="k hastip" data-tip="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Este indicador conta tudo que NÃO é Atrasada.">No prazo</div><div class="v">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
       </div></div>`;
   }
 
@@ -912,6 +993,7 @@ function renderSectorHierarchy(list){
     card.addEventListener("click",act);
     card.addEventListener("keydown",e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); act(); } });
   });
+  bindTips(box);
   fadeIn(box);
 }
 /* ---- cartão de pessoa reutilizável (colaborador flat e folha do setor) ---- */
@@ -934,9 +1016,10 @@ function renderPersonCards(box, rows, opts){
       <div class="mgrid">
         <div><div class="k">Quantidade</div><div class="v">${nf.format(s.n)}</div></div>
         <div><div class="k">${opts.tempoLabel||"Tempo"}</div><div class="v">${fmtDur(s.avgExec)}</div></div>
-        <div><div class="k">No prazo</div><div class="v" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
+        <div><div class="k hastip" data-tip="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Este indicador conta tudo que NÃO é Atrasada.">No prazo</div><div class="v" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
       </div></div>`;
   }).join("");
+  bindTips(box);
   if(!opts.clickable) return;
   box.querySelectorAll(".entity").forEach(card=>{
     const act=()=>{
@@ -951,8 +1034,8 @@ function renderPersonCards(box, rows, opts){
 }
 
 /* ═════════ TABELA ═════════ */
-const SLA_ORDER={rapida:0,regular:1,atrasada:2};
-const SLA_LABEL={rapida:["good","Rápida"],regular:["none","Regular"],atrasada:["bad","Atrasada"]};
+const SLA_ORDER={rapida:0,normal:1,no_prazo:2,atrasada:3};
+const SLA_LABEL={rapida:["good","Rápida"],normal:["info","Normal"],no_prazo:["warn","No prazo"],atrasada:["bad","Atrasada"]};
 const COLS=[{k:"tarefa",t:"Tarefa"},{k:"setorNome",t:"Setor"},{k:"responsavel",t:"Responsável"},
   {k:"criador",t:"Criador"},{k:"aval",t:"Avaliação"},{k:"sla",t:"Prazo"},
   {k:"execMs",t:"Execução",right:true},{k:"conclusao",t:"Concluída em",right:true}];
@@ -987,14 +1070,19 @@ function renderLog(list){
       :t.sat?`<span class="pill good">Satisfeito</span>`
       :`<span class="pill bad ${j?"hastip":""}"${j?` data-tip="${esc(j)}"`:""}>Insatisfeito</span>`;
     const [sc,sl]=t.sla?SLA_LABEL[t.sla]:["none","sem prazo"];
+    const slaTip = t.sla
+      ? (t.slaPct!=null
+          ? `${Math.round(t.slaPct)}% do prazo consumido — criada ${fmtParts(t.criado).date} ${fmtParts(t.criado).time}, prazo ${fmtParts(t.deadline).date} ${fmtParts(t.deadline).time}, concluída ${fmtParts(t.conclusao).date} ${fmtParts(t.conclusao).time}. Faixas: até 30% Rápida · 31–90% Normal · 91–100% No prazo · acima de 100% Atrasada.`
+          : `Prazo já vencido no momento da criação — concluída ${t.conclusao<=t.deadline?"dentro":"depois"} do prazo final.`)
+      : "Esta tarefa não tem prazo (DEADLINE) cadastrado no Bitrix.";
     const dp=fmtParts(t.conclusao);
     return `<tr>
       <td><div class="tk">${esc(t.tarefa||"(sem título)")}<small>#${esc(t.idTarefa||"—")}</small></div></td>
-      <td class="who" title="ID do dpto: ${esc(t.setorId)}">${esc(t.setorNome)}</td>
+      <td class="who">${esc(t.setorNome)}</td>
       <td class="who">${esc(t.responsavel||"—")}${t.cargo?`<small>${esc(t.cargo)}</small>`:""}</td>
       <td class="who">${esc(t.criador||"—")}${t.respondente?`<small>aval: ${esc(t.respondente)}</small>`:""}</td>
       <td>${aval}</td>
-      <td><span class="pill ${sc}">${sl}</span></td>
+      <td><span class="pill ${sc} hastip" data-tip="${esc(slaTip)}">${sl}</span></td>
       <td class="right">${fmtDur(t.execMs)}</td>
       <td class="right"><div class="dt"><span class="d">${dp.date}</span><span class="h">${dp.time}</span></div></td>
     </tr>`;
@@ -1143,7 +1231,7 @@ async function boot(){
   if(!bitrixOK){
     try{
       const [d,u]=await Promise.all([fetchDepts(),fetchUsers()]);
-      DEPTS=d; DEPT_REDIRECT=mergeDuplicateDepts(d); USERS=u; buildIndex(); bitrixOK=true; invalidate();
+      DEPTS=d; buildNameKeyDisplay(); USERS=u; buildIndex(); bitrixOK=true; invalidate();
       el("dotBitrix").className="dot";
     }catch(e){
       bitrixOK=false; el("dotBitrix").className="dot bad";
@@ -1185,6 +1273,10 @@ document.querySelectorAll("#viewSeg button").forEach(b=>b.addEventListener("clic
 document.querySelectorAll("#periodSeg button").forEach(b=>b.addEventListener("click",()=>{
   document.querySelectorAll("#periodSeg button").forEach(x=>x.classList.remove("on"));
   b.classList.add("on"); period=+b.dataset.p; rowLimit=100; render();
+}));
+document.querySelectorAll("#trendGranSeg button").forEach(b=>b.addEventListener("click",()=>{
+  document.querySelectorAll("#trendGranSeg button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on"); trendGran=b.dataset.g; render();
 }));
 ["fEntity","fRating","fSLA"].forEach(id=>el(id).addEventListener("change",()=>{
   if(id==="fEntity") activeEntity=el(id).value||null;

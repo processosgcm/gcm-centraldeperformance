@@ -399,6 +399,7 @@ function fmtParts(v){
           time:d.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})};
 }
 const localKey=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+const dateOnly=d=>new Date(d.getFullYear(),d.getMonth(),d.getDate());
 
 /* ═════════ TOOLTIP (no body — nunca é cortado pelo painel) ═════════ */
 const tipEl=el("tip");
@@ -693,9 +694,11 @@ function trendChip(cur,prev,higherBetter,fmt){
   return `<span class="cmp ${better?"up":"down"}">${d>0?"↑":"↓"} ${fmt(Math.abs(d))}</span>`;
 }
 function sparkline(list){
-  if(!period||!list.length) return "";
+  if(!list.length) return "";
   const {curStart,curEnd}=windows();
-  const n=Math.min(period,30), b=new Array(n).fill(0), span=(curEnd-curStart)||1;
+  if(!curStart) return "";
+  const daysSpan=Math.max(1, Math.round((curEnd-curStart)/86400000)+1);
+  const n=Math.min(daysSpan,30), b=new Array(n).fill(0), span=(curEnd-curStart)||1;
   list.forEach(t=>{ if(!t.conclusao) return;
     const i=Math.min(n-1,Math.floor(((t.conclusao-curStart)/span)*n));
     if(i>=0) b[i]++; });

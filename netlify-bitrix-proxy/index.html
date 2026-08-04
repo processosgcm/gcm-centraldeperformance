@@ -49,6 +49,10 @@ button{font-family:inherit}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 .statusbar{display:flex;gap:14px;font-size:11.3px;color:var(--ink-faint);align-items:center;padding:0 26px 12px;flex-wrap:wrap}
+.customRange{display:flex;gap:12px;align-items:center;padding:0 26px 14px;flex-wrap:wrap}
+.customRange label{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-soft);font-weight:600}
+.customRange input[type=date]{border:1px solid var(--line);background:var(--card);border-radius:9px;padding:7px 10px;font-size:13px;color:var(--ink);font-family:inherit}
+.customRange input[type=date]:focus{border-color:var(--brand-3);outline:none}
 .statusbar .item{display:flex;align-items:center;gap:5px}
 .statusbar .dot{width:6px;height:6px;border-radius:50%;background:var(--good);flex-shrink:0}
 .statusbar .dot.bad{background:var(--bad)}
@@ -124,6 +128,8 @@ button{font-family:inherit}
 .entity{border:1px solid var(--line);border-radius:13px;padding:15px 16px;cursor:pointer;transition:.15s;background:#fff}
 .entity:hover{border-color:var(--brand-3);transform:translateY(-2px);box-shadow:0 8px 20px -12px rgba(18,23,43,.22)}
 .entity.on{border-color:var(--brand);box-shadow:0 0 0 1.5px var(--brand) inset}
+.entity.static{cursor:default}
+.entity.static:hover{border-color:var(--line);transform:none;box-shadow:none}
 .entity-hd{display:flex;align-items:center;gap:11px}
 .avatar{width:36px;height:36px;border-radius:10px;background:var(--neutral-bg);color:var(--brand);
   display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12.5px;flex:0 0 36px}
@@ -223,6 +229,7 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
     <button data-p="30">30 dias</button>
     <button data-p="90">90 dias</button>
     <button data-p="0">Tudo</button>
+    <button data-p="custom">Personalizado</button>
   </div>
   <button class="iconbtn" id="btnSync" title="Atualizar dados">&#8635;</button>
   <button class="iconbtn" id="btnPerms" title="Gerenciar permissões" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
@@ -235,6 +242,13 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
   <span class="item" id="syncTxt">carregando…</span>
   <span style="flex:1"></span>
   <span class="item who" id="whoTxt"></span>
+</div>
+
+<div class="customRange" id="customRange" style="display:none">
+  <label>De <input type="date" id="customFrom"></label>
+  <label>Até <input type="date" id="customTo"></label>
+  <button class="solid" id="btnApplyCustom">Aplicar período</button>
+  <span class="hint" id="customHint"></span>
 </div>
 
 <section class="panel" id="permsPanel" style="display:none;max-width:1280px;margin:0 auto 16px;">
@@ -271,7 +285,8 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
     <select id="fSLA">
       <option value="">Todos os prazos</option>
       <option value="rapida">Rápidas</option>
-      <option value="regular">Regulares</option>
+      <option value="normal">Normais</option>
+      <option value="no_prazo">No prazo</option>
       <option value="atrasada">Atrasadas</option>
       <option value="sem">Sem prazo definido</option>
     </select>
@@ -341,7 +356,9 @@ let PREPARED=null;               /* cache de prepare() */
 let metaFetched=new Set();       /* tarefas cujo prazo já foi buscado */
 let bitrixOK=false;
 let view="setor",period=7;
-let trendGran="dia"; // dia|mes|ano — só usado quando period===0 ("Tudo")
+let trendGran="dia"; // dia|mes|ano — usado em "Tudo" e "Personalizado"
+let customStart=null, customEnd=null; // usados quando period==="custom"
+let leafPersonFilter=null; // pessoa selecionada num cartão de "folha" dentro da visão Por setor
 let activeEntity=null;
 let sortKey="conclusao",sortDir=-1;
 let rowLimit=100;
@@ -619,6 +636,16 @@ function stats(list){
 
 /* ═════════ PERÍODO ═════════ */
 function windows(){
+  if(period==="custom"){
+    if(!customStart||!customEnd) return {};
+    const curStart=new Date(customStart); curStart.setHours(0,0,0,0);
+    const curEnd=new Date(customEnd); curEnd.setHours(23,59,59,999);
+    if(curStart>curEnd) return {};
+    const spanMs=curEnd.getTime()-curStart.getTime()+1;
+    const prevEnd=new Date(curStart.getTime()-1);
+    const prevStart=new Date(prevEnd.getTime()-spanMs+1);
+    return {curStart,curEnd,prevStart,prevEnd};
+  }
   if(!period) return {};
   const curEnd=new Date(); curEnd.setHours(23,59,59,999);
   const curStart=new Date(curEnd); curStart.setDate(curStart.getDate()-period+1); curStart.setHours(0,0,0,0);
@@ -645,12 +672,13 @@ function matchesOtherFilters(t,f){
 }
 function applyFilters(list){
   const f=readFilters();
-  if(!f.entity&&!f.rating&&!f.sla&&!f.q) return list;
+  if(!f.entity&&!f.rating&&!f.sla&&!f.q&&!leafPersonFilter) return list;
   return list.filter(t=>{
     if(f.entity){
       if(view==="setor"){ if(!t.deptChain.includes(f.entity)) return false; }
       else if(t.responsavel!==f.entity) return false;
     }
+    if(view==="setor" && leafPersonFilter && t.responsavel!==leafPersonFilter) return false;
     return matchesOtherFilters(t,f);
   });
 }
@@ -701,28 +729,33 @@ function renderKPIs(cur,prev){
 /* ═════════ TENDÊNCIA ═════════ */
 function renderTrend(list){
   const seg=el("trendGranSeg");
-  seg.style.display = period ? "none" : "flex";
-  if(!period && trendGran==="mes") return renderTrendMensal(list);
-  if(!period && trendGran==="ano") return renderTrendAnual(list);
+  const flexible = !period || period==="custom";
+  seg.style.display = flexible ? "flex" : "none";
+  seg.querySelectorAll("button").forEach(b=>b.classList.toggle("on", b.dataset.g===trendGran));
+  if(flexible && trendGran==="mes") return renderTrendMensal(list);
+  if(flexible && trendGran==="ano") return renderTrendAnual(list);
   return renderTrendDiario(list);
 }
 function renderTrendDiario(list){
-  let days;
-  if(period){ days=period; }
-  else{
-    // "Tudo": abrange do dia mais antigo ao mais novo encontrado nos dados
+  let startD,endD,label;
+  if(period && period!=="custom"){
+    endD=new Date(); endD.setHours(0,0,0,0);
+    startD=new Date(endD); startD.setDate(startD.getDate()-(period-1));
+    label=`últimos ${period} dias`;
+  }else if(period==="custom" && customStart && customEnd){
+    startD=dateOnly(customStart); endD=dateOnly(customEnd);
+    label=`de ${startD.toLocaleDateString("pt-BR")} até ${endD.toLocaleDateString("pt-BR")}`;
+  }else{
+    // "Tudo" (ou personalizado ainda sem datas): abrange do dia mais antigo ao mais novo nos dados
     const datas=list.map(t=>t.conclusao).filter(Boolean);
-    if(!datas.length) days=30;
-    else{
-      const min=new Date(Math.min(...datas)), max=new Date(Math.max(...datas));
-      days=Math.max(1, Math.round((dateOnly(max)-dateOnly(min))/86400000)+1);
-    }
+    if(!datas.length){ startD=endD=dateOnly(new Date()); }
+    else{ startD=dateOnly(new Date(Math.min(...datas))); endD=dateOnly(new Date(Math.max(...datas))); }
+    label="todo o período";
   }
+  const days=Math.max(1, Math.round((endD-startD)/86400000)+1);
   const buckets=[];
-  const base=list.map(t=>t.conclusao).filter(Boolean);
-  const endRef = period ? new Date() : (base.length?new Date(Math.max(...base)):new Date());
-  for(let i=days-1;i>=0;i--){
-    const d=new Date(endRef); d.setHours(0,0,0,0); d.setDate(d.getDate()-i);
+  for(let i=0;i<days;i++){
+    const d=new Date(startD); d.setDate(d.getDate()+i);
     buckets.push({key:localKey(d),date:d,sat:0,insat:0,none:0});
   }
   const map={}; buckets.forEach(b=>map[b.key]=b);
@@ -734,7 +767,7 @@ function renderTrendDiario(list){
     if(!t.rated) b.none++; else if(t.sat) b.sat++; else b.insat++;
   });
   const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
-  el("trendHint").textContent=`${period?`últimos ${days} dias`:`todo o período · ${days} dia(s)`} · pico de ${peak} no dia`+(fora?` · ${nf.format(fora)} fora da janela`:"");
+  el("trendHint").textContent=`${label} · ${days} dia(s) · pico de ${peak} no dia`+(fora?` · ${nf.format(fora)} fora da janela`:"");
   const every=buckets.length<=31?1:Math.ceil(buckets.length/12);
   el("trend").innerHTML=buckets.map((b,i)=>{
     const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
@@ -912,6 +945,7 @@ function renderBreadcrumb(){
   bar.innerHTML = crumbs.join(`<span class="sep">›</span>`);
   bar.querySelectorAll(".crumb").forEach(b=>b.addEventListener("click",()=>{
     activeEntity = b.dataset.id || null;
+    leafPersonFilter=null;
     el("fEntity").value = activeEntity||"";
     rowLimit=100; render();
   }));
@@ -987,6 +1021,7 @@ function renderSectorHierarchy(list){
   box.querySelectorAll(".entity[data-key]").forEach(card=>{
     const act=()=>{
       activeEntity=card.dataset.key;               // navegar sempre entra (não é toggle)
+      leafPersonFilter=null;
       el("fEntity").value=activeEntity||"";
       rowLimit=100; render();
     };
@@ -1003,8 +1038,9 @@ function renderPersonCards(box, rows, opts){
     const s=stats(grp.items), t0=grp.items[0];
     const fora=!t0.achado;
     const pc=s.noPrazoPct==null?"#9AA0B4":s.noPrazoPct>=85?"#00973A":s.noPrazoPct>=60?"#BA560B":"#DE001A";
-    return `<div class="entity ${opts.clickable&&activeEntity===key?"on":""}" data-key="${esc(key)}" tabindex="${opts.clickable?0:-1}"
-                 role="${opts.clickable?"button":"group"}" style="${opts.clickable?"":"cursor:default"}">
+    const selecionado = opts.isLeafPerson ? leafPersonFilter===key : activeEntity===key;
+    return `<div class="entity ${opts.clickable?(selecionado?"on":""):"static"}" data-key="${esc(key)}" tabindex="${opts.clickable?0:-1}"
+                 role="${opts.clickable?"button":"group"}">
       <div class="entity-hd">
         <div class="avatar">${esc(initials(grp.label))}</div>
         <div style="min-width:0;flex:1">
@@ -1024,8 +1060,12 @@ function renderPersonCards(box, rows, opts){
   box.querySelectorAll(".entity").forEach(card=>{
     const act=()=>{
       const k=card.dataset.key;
-      activeEntity=activeEntity===k?null:k;
-      el("fEntity").value=activeEntity||"";
+      if(opts.isLeafPerson){
+        leafPersonFilter = leafPersonFilter===k ? null : k;
+      }else{
+        activeEntity=activeEntity===k?null:k;
+        el("fEntity").value=activeEntity||"";
+      }
       rowLimit=100; render();
     };
     card.addEventListener("click",act);
@@ -1118,9 +1158,10 @@ function renderChips(all){
   }
   if(f.rating) chips.push({label:{sat:"Satisfeitas",unsat:"Insatisfeitas",rated:"Somente avaliadas",unrated:"Sem avaliação"}[f.rating],
     clear:()=>el("fRating").value=""});
-  if(f.sla) chips.push({label:{rapida:"Prazo: rápidas",regular:"Prazo: regulares",atrasada:"Prazo: atrasadas",sem:"Sem prazo definido"}[f.sla],
+  if(f.sla) chips.push({label:{rapida:"Prazo: rápidas",normal:"Prazo: normais",no_prazo:"Prazo: no prazo",atrasada:"Prazo: atrasadas",sem:"Sem prazo definido"}[f.sla],
     clear:()=>el("fSLA").value=""});
   if(f.q) chips.push({label:`Busca: "${el("fSearch").value}"`,clear:()=>el("fSearch").value=""});
+  if(leafPersonFilter) chips.push({label:"Colaborador: "+leafPersonFilter, clear:()=>{leafPersonFilter=null;}});
   const bar=el("chipBar");
   if(!chips.length){ bar.innerHTML=""; return; }
   bar.innerHTML=chips.map((c,i)=>`<span class="chip">${esc(c.label)}<button data-i="${i}" aria-label="remover filtro">×</button></span>`).join("")
@@ -1132,8 +1173,8 @@ function renderChips(all){
 /* ═════════ CSV ═════════ */
 function currentRows(){
   const f=applyFilters(prepare());
-  if(!period) return f;
   const {curStart,curEnd}=windows();
+  if(!curStart) return f;
   return f.filter(t=>inWin(t,curStart,curEnd));
 }
 function exportCsv(){
@@ -1144,7 +1185,7 @@ function exportCsv(){
   const cell=v=>{ const s=(v==null?"":String(v)).replace(/"/g,'""'); return /[";\n]/.test(s)?`"${s}"`:s; };
   const body=rows.map(t=>[t.idTarefa,t.tarefa,t.setorNome,t.responsavel,t.cargo,t.criador,
     !t.rated?"Presumido OK":(t.sat?"Satisfeito":"Insatisfeito"), t.justificativa||"",
-    t.sla?{rapida:"Rápida",regular:"Regular",atrasada:"Atrasada"}[t.sla]:"Sem prazo",
+    t.sla?{rapida:"Rápida",normal:"Normal",no_prazo:"No prazo",atrasada:"Atrasada"}[t.sla]:"Sem prazo",
     fmtDur(t.execMs),
     t.conclusao?t.conclusao.toLocaleString("pt-BR"):"",
     t.dataResposta?t.dataResposta.toLocaleString("pt-BR"):""].map(cell).join(";"));
@@ -1162,8 +1203,8 @@ function render(){
   fillEntitySelect(all);
   const filtered=applyFilters(all);
   const {curStart,curEnd,prevStart,prevEnd}=windows();
-  const cur=period?filtered.filter(t=>inWin(t,curStart,curEnd)):filtered;
-  const prev=period?filtered.filter(t=>inWin(t,prevStart,prevEnd)):[];
+  const cur=curStart?filtered.filter(t=>inWin(t,curStart,curEnd)):filtered;
+  const prev=curStart?filtered.filter(t=>inWin(t,prevStart,prevEnd)):[];
   renderKPIs(cur,prev);
   renderTrend(cur);
   renderGrid(cur);
@@ -1172,7 +1213,7 @@ function render(){
   savePrefs();
 }
 function clearFilters(){
-  activeEntity=null;
+  activeEntity=null; leafPersonFilter=null;
   ["fEntity","fRating","fSLA","fSearch"].forEach(id=>el(id).value="");
   rowLimit=100; render();
 }
@@ -1180,6 +1221,7 @@ function clearFilters(){
 /* ═════════ PREFERÊNCIAS ═════════ */
 function savePrefs(){
   try{ sessionStorage.setItem("cp_prefs",JSON.stringify({view,period,
+    customStart:customStart?customStart.toISOString():null, customEnd:customEnd?customEnd.toISOString():null,
     entity:el("fEntity").value,rating:el("fRating").value,sla:el("fSLA").value,
     q:el("fSearch").value,sortKey,sortDir})); }catch(e){}
 }
@@ -1188,11 +1230,19 @@ function loadPrefs(){
     const p=JSON.parse(sessionStorage.getItem("cp_prefs")||"null");
     if(!p) return;
     view=p.view||view; period=p.period??period;
+    if(p.customStart) customStart=new Date(p.customStart);
+    if(p.customEnd) customEnd=new Date(p.customEnd);
     sortKey=p.sortKey||sortKey; sortDir=p.sortDir||sortDir;
     el("fRating").value=p.rating||""; el("fSLA").value=p.sla||""; el("fSearch").value=p.q||"";
     activeEntity=p.entity||null;
     document.querySelectorAll("#viewSeg button").forEach(b=>b.classList.toggle("on",b.dataset.view===view));
-    document.querySelectorAll("#periodSeg button").forEach(b=>b.classList.toggle("on",+b.dataset.p===period));
+    document.querySelectorAll("#periodSeg button").forEach(b=>b.classList.toggle("on",
+      period==="custom" ? b.dataset.p==="custom" : +b.dataset.p===period));
+    if(period==="custom"){
+      el("customRange").style.display="flex";
+      if(customStart) el("customFrom").value=localKey(customStart);
+      if(customEnd) el("customTo").value=localKey(customEnd);
+    }
   }catch(e){}
 }
 
@@ -1268,18 +1318,45 @@ el("btnClear").addEventListener("click",clearFilters);
 document.querySelectorAll("#viewSeg button").forEach(b=>b.addEventListener("click",()=>{
   document.querySelectorAll("#viewSeg button").forEach(x=>x.classList.remove("on"));
   b.classList.add("on"); view=b.dataset.view;
-  activeEntity=null; el("fEntity").value=""; rowLimit=100; render();
+  activeEntity=null; leafPersonFilter=null; el("fEntity").value=""; rowLimit=100; render();
 }));
 document.querySelectorAll("#periodSeg button").forEach(b=>b.addEventListener("click",()=>{
   document.querySelectorAll("#periodSeg button").forEach(x=>x.classList.remove("on"));
-  b.classList.add("on"); period=+b.dataset.p; rowLimit=100; render();
+  b.classList.add("on");
+  if(b.dataset.p==="custom"){
+    period="custom";
+    el("customRange").style.display="flex";
+    if(!customStart||!customEnd) return; // espera o usuário escolher e clicar em "Aplicar"
+  }else{
+    el("customRange").style.display="none";
+    period=+b.dataset.p;
+  }
+  rowLimit=100; render();
 }));
-document.querySelectorAll("#trendGranSeg button").forEach(b=>b.addEventListener("click",()=>{
-  document.querySelectorAll("#trendGranSeg button").forEach(x=>x.classList.remove("on"));
-  b.classList.add("on"); trendGran=b.dataset.g; render();
-}));
+el("customFrom").addEventListener("change",()=>{ customStart=el("customFrom").value?new Date(el("customFrom").value+"T00:00:00"):null; });
+el("customTo").addEventListener("change",()=>{ customEnd=el("customTo").value?new Date(el("customTo").value+"T00:00:00"):null; });
+el("btnApplyCustom").addEventListener("click",()=>{
+  const fromVal=el("customFrom").value, toVal=el("customTo").value;
+  customStart = fromVal ? new Date(fromVal+"T00:00:00") : null;
+  customEnd = toVal ? new Date(toVal+"T00:00:00") : null;
+  if(!customStart||!customEnd){
+    el("customHint").textContent="Escolha as duas datas antes de aplicar.";
+    return;
+  }
+  if(customStart>customEnd){
+    el("customHint").textContent="A data 'De' precisa ser antes ou igual à data 'Até'.";
+    return;
+  }
+  el("customHint").textContent="";
+  period="custom"; rowLimit=100; render();
+});
+el("trendGranSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-g]");
+  if(!b) return;
+  trendGran=b.dataset.g; render();
+});
 ["fEntity","fRating","fSLA"].forEach(id=>el(id).addEventListener("change",()=>{
-  if(id==="fEntity") activeEntity=el(id).value||null;
+  if(id==="fEntity"){ activeEntity=el(id).value||null; leafPersonFilter=null; }
   rowLimit=100; render();
 }));
 /* debounce: antes recalculava tudo a cada tecla */

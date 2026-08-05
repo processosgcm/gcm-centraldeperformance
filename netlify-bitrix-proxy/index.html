@@ -311,9 +311,8 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
     <div class="panel-bd">
       <div class="trend" id="trend"></div>
       <div class="legend">
-        <span><i style="background:var(--good)"></i>Satisfeita</span>
+        <span><i style="background:var(--good)"></i>Satisfeita (inclui não avaliadas)</span>
         <span><i style="background:var(--bad)"></i>Insatisfeita</span>
-        <span><i style="background:#C3CADB"></i>Sem avaliação (presumida OK)</span>
       </div>
     </div>
   </section>
@@ -346,6 +345,11 @@ const TABLE="avaliacoes_tarefas";
 const BITRIX_URL="https://gcm.bitrix24.com.br/rest/935/7ie7vmhsgev5e32p/";
 const BITRIX_PROXY_URL="https://gcm-centraldeperformance.netlify.app/.netlify/functions/bitrix-proxy";
 const DONE_STATUS="respondido";
+const PENDING_STATUS="pendente";
+/* status considerados no painel: respondido (avaliação recebida) e
+   pendente (avaliação ainda não respondida — tratada como "Não avaliada"
+   e contada junto com as satisfeitas, ver prepare()) */
+const INCLUDED_STATUSES=[DONE_STATUS,PENDING_STATUS];
 /* só as colunas usadas — evita trafegar a tabela inteira */
 const COLUMNS=["id","id_tarefa","tarefa","proprietario_nome","responsavel_nome","nome_respondente",
                "status","avaliacao","justificativa","data_envio","data_resposta"].join(",");
@@ -593,7 +597,7 @@ function classifySLA(created,deadline,done){
    avaliacao 1 = Satisfeito · 2 = Insatisfeito · vazio = presumido satisfeito */
 function prepare(){
   if(PREPARED) return PREPARED;
-  PREPARED=RAW.filter(r=>norm(r.status)===DONE_STATUS).map(r=>{
+  PREPARED=RAW.filter(r=>INCLUDED_STATUSES.includes(norm(r.status))).map(r=>{
     const u=findUser(r.responsavel_nome), s=sectorOf(u);
     const rated=r.avaliacao!=null&&r.avaliacao!=="";
     const dEnv=toDate(r.data_envio),dRes=toDate(r.data_resposta);
@@ -759,7 +763,7 @@ function renderTrendDiario(list){
   const buckets=[];
   for(let i=0;i<days;i++){
     const d=new Date(startD); d.setDate(d.getDate()+i);
-    buckets.push({key:localKey(d),date:d,sat:0,insat:0,none:0});
+    buckets.push({key:localKey(d),date:d,sat:0,insat:0});
   }
   const map={}; buckets.forEach(b=>map[b.key]=b);
   let fora=0;
@@ -767,17 +771,16 @@ function renderTrendDiario(list){
     if(!t.conclusao) return;
     const b=map[localKey(t.conclusao)];
     if(!b){ fora++; return; }
-    if(!t.rated) b.none++; else if(t.sat) b.sat++; else b.insat++;
+    if(t.sat) b.sat++; else b.insat++;
   });
-  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
+  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat));
   el("trendHint").textContent=`${label} · ${days} dia(s) · pico de ${peak} no dia`+(fora?` · ${nf.format(fora)} fora da janela`:"");
   const every=buckets.length<=31?1:Math.ceil(buckets.length/12);
   el("trend").innerHTML=buckets.map((b,i)=>{
-    const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
-    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s), ${b.none} sem avaliação`:"";
+    const tot=b.sat+b.insat, h=v=>v?Math.max(3,(v/peak)*56):0;
+    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s)`:"";
     return `<div class="tcol" data-tip="${b.date.toLocaleDateString("pt-BR")} — ${tot} concluída(s)${det}">
       <div class="tstack">
-        ${b.none?`<div class="tseg" style="height:${h(b.none)}px;background:#C3CADB"></div>`:""}
         ${b.insat?`<div class="tseg" style="height:${h(b.insat)}px;background:#DE001A"></div>`:""}
         ${b.sat?`<div class="tseg" style="height:${h(b.sat)}px;background:#00973A"></div>`:""}
       </div>
@@ -795,7 +798,7 @@ function renderTrendMensal(list){
     const last=new Date(max.getFullYear(),max.getMonth(),1);
     while(cur<=last){
       const key=`${cur.getFullYear()}-${String(cur.getMonth()+1).padStart(2,"0")}`;
-      map[key]={key,year:cur.getFullYear(),month:cur.getMonth(),sat:0,insat:0,none:0};
+      map[key]={key,year:cur.getFullYear(),month:cur.getMonth(),sat:0,insat:0};
       cur=new Date(cur.getFullYear(),cur.getMonth()+1,1);
     }
   }
@@ -805,19 +808,18 @@ function renderTrendMensal(list){
     const d=t.conclusao, key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
     const b=map[key];
     if(!b){ fora++; return; }
-    if(!t.rated) b.none++; else if(t.sat) b.sat++; else b.insat++;
+    if(t.sat) b.sat++; else b.insat++;
   });
   const buckets=Object.values(map).sort((a,b)=>a.key.localeCompare(b.key));
-  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
+  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat));
   el("trendHint").textContent=`todo o período · ${buckets.length} mês(es) · pico de ${peak} no mês`+(fora?` · ${nf.format(fora)} fora da janela`:"");
   const MESES=["jan","fev","mar","abr","mai","jun","jul","ago","set","out","nov","dez"];
   const every=buckets.length<=24?1:Math.ceil(buckets.length/12);
   el("trend").innerHTML=buckets.map((b,i)=>{
-    const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
-    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s), ${b.none} sem avaliação`:"";
+    const tot=b.sat+b.insat, h=v=>v?Math.max(3,(v/peak)*56):0;
+    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s)`:"";
     return `<div class="tcol" data-tip="${MESES[b.month]}/${b.year} — ${tot} concluída(s)${det}">
       <div class="tstack">
-        ${b.none?`<div class="tseg" style="height:${h(b.none)}px;background:#C3CADB"></div>`:""}
         ${b.insat?`<div class="tseg" style="height:${h(b.insat)}px;background:#DE001A"></div>`:""}
         ${b.sat?`<div class="tseg" style="height:${h(b.sat)}px;background:#00973A"></div>`:""}
       </div>
@@ -832,18 +834,17 @@ function renderTrendAnual(list){
   list.forEach(t=>{
     if(!t.conclusao){ return; }
     const y=t.conclusao.getFullYear();
-    if(!map[y]) map[y]={year:y,sat:0,insat:0,none:0};
-    if(!t.rated) map[y].none++; else if(t.sat) map[y].sat++; else map[y].insat++;
+    if(!map[y]) map[y]={year:y,sat:0,insat:0};
+    if(t.sat) map[y].sat++; else map[y].insat++;
   });
   const buckets=Object.values(map).sort((a,b)=>a.year-b.year);
-  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat+b.none));
+  const peak=Math.max(1,...buckets.map(b=>b.sat+b.insat));
   el("trendHint").textContent=`todo o período · ${buckets.length} ano(s) · pico de ${peak} no ano`;
   el("trend").innerHTML=buckets.map(b=>{
-    const tot=b.sat+b.insat+b.none, h=v=>v?Math.max(3,(v/peak)*56):0;
-    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s), ${b.none} sem avaliação`:"";
+    const tot=b.sat+b.insat, h=v=>v?Math.max(3,(v/peak)*56):0;
+    const det=tot?`: ${b.sat} satisfeita(s), ${b.insat} insatisfeita(s)`:"";
     return `<div class="tcol" data-tip="${b.year} — ${tot} concluída(s)${det}">
       <div class="tstack">
-        ${b.none?`<div class="tseg" style="height:${h(b.none)}px;background:#C3CADB"></div>`:""}
         ${b.insat?`<div class="tseg" style="height:${h(b.insat)}px;background:#DE001A"></div>`:""}
         ${b.sat?`<div class="tseg" style="height:${h(b.sat)}px;background:#00973A"></div>`:""}
       </div>
@@ -1109,7 +1110,7 @@ function renderLog(list){
     COLS.map(c=>`<th class="${c.right?"right":""}" data-k="${c.k}">${c.t}${sortKey===c.k?(sortDir>0?" ▲":" ▼"):""}</th>`).join("")
   }</tr></thead><tbody>${shown.map(t=>{
     const j=(t.justificativa||"").trim();
-    const aval=!t.rated?`<span class="pill none">presumido OK</span>`
+    const aval=!t.rated?`<span class="pill good">Não avaliada</span>`
       :t.sat?`<span class="pill good">Satisfeito</span>`
       :`<span class="pill bad ${j?"hastip":""}"${j?` data-tip="${esc(j)}"`:""}>Insatisfeito</span>`;
     const [sc,sl]=t.sla?SLA_LABEL[t.sla]:["none","sem prazo"];
@@ -1187,7 +1188,7 @@ function exportCsv(){
               "Prazo","Tempo de execução","Concluída em","Avaliada em"];
   const cell=v=>{ const s=(v==null?"":String(v)).replace(/"/g,'""'); return /[";\n]/.test(s)?`"${s}"`:s; };
   const body=rows.map(t=>[t.idTarefa,t.tarefa,t.setorNome,t.responsavel,t.cargo,t.criador,
-    !t.rated?"Presumido OK":(t.sat?"Satisfeito":"Insatisfeito"), t.justificativa||"",
+    !t.rated?"Não avaliada":(t.sat?"Satisfeito":"Insatisfeito"), t.justificativa||"",
     t.sla?{rapida:"Rápida",normal:"Normal",no_prazo:"No prazo",atrasada:"Atrasada"}[t.sla]:"Sem prazo",
     fmtDur(t.execMs),
     t.conclusao?t.conclusao.toLocaleString("pt-BR"):"",
@@ -1298,7 +1299,7 @@ async function boot(){
   }
   /* prazos: só das tarefas ainda não consultadas */
   if(bitrixOK){
-    const ids=RAW.filter(r=>norm(r.status)===DONE_STATUS).map(r=>r.id_tarefa).filter(Boolean);
+    const ids=RAW.filter(r=>INCLUDED_STATUSES.includes(norm(r.status))).map(r=>r.id_tarefa).filter(Boolean);
     const novos=await fetchTaskMeta(ids);
     if(Object.keys(novos).length){ Object.assign(TASK_META,novos); invalidate(); }
     const semPrazo=prepare().filter(t=>!t.deadline).length;
@@ -1378,28 +1379,20 @@ try{
 
 /* ═════════ PAINEL DE PERMISSÕES (admin) ═════════
    Mesma tabela usuarios_acesso do Supabase usada pelo login.html — assim
-   uma aprovação feita aqui já vale pra qualquer navegador/computador.
-   Aprovar/revogar/trocar tipo passam pela função manage-access (que usa a
-   service role key e confere no servidor se quem pede já é admin) — a
-   chave anon não tem mais permissão de UPDATE direto nessa tabela. */
+   uma aprovação feita aqui já vale pra qualquer navegador/computador. */
 const SB_HEADERS={apikey:SUPABASE_ANON_KEY,Authorization:`Bearer ${SUPABASE_ANON_KEY}`,"Content-Type":"application/json"};
-const MANAGE_ACCESS_URL="https://gcm-centraldeperformance.netlify.app/.netlify/functions/manage-access";
 async function listarUsuariosAcesso(){
   const res=await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso?select=*&order=created_at.asc`,{headers:SB_HEADERS});
   if(!res.ok) throw new Error(`Supabase GET ${res.status}`);
   return res.json();
 }
-function requesterAtual(){
-  try{ return JSON.parse(sessionStorage.getItem("cp_session")||"null")?.usuario||null; }catch(e){ return null; }
-}
-async function chamarManageAccess(action,target,tipo){
-  const res=await fetch(MANAGE_ACCESS_URL,{
-    method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({action, requester:requesterAtual(), target, tipo})
+async function patchUsuarioAcesso(usuario,patch){
+  const res=await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso?usuario=eq.${encodeURIComponent(usuario)}`,{
+    method:"PATCH", headers:{...SB_HEADERS,Prefer:"return=representation"},
+    body:JSON.stringify({...patch, updated_at:new Date().toISOString()})
   });
-  const data=await res.json().catch(()=>({}));
-  if(!data.ok) throw new Error(data.erro||`Falha (${res.status})`);
-  return data.registro;
+  if(!res.ok) throw new Error(`Supabase PATCH ${res.status}`);
+  return (await res.json())[0];
 }
 let permsOpen=false;
 async function togglePerms(){
@@ -1441,19 +1434,19 @@ async function renderPerms(){
   body.querySelectorAll(".perm-aprovar").forEach(btn=>btn.addEventListener("click",async()=>{
     const usuario=btn.closest("tr").dataset.usuario;
     const tipoSel=btn.closest("tr").querySelector(".perm-tipo").value||"individual";
-    try{ await chamarManageAccess("aprovar",usuario,tipoSel); await renderPerms(); }
+    try{ await patchUsuarioAcesso(usuario,{aprovado:true,tipo:tipoSel}); await renderPerms(); }
     catch(e){ alert("Não consegui aprovar: "+e.message); }
   }));
   body.querySelectorAll(".perm-revogar").forEach(btn=>btn.addEventListener("click",async()=>{
     const usuario=btn.closest("tr").dataset.usuario;
     if(!confirm(`Revogar o acesso de ${usuario}?`)) return;
-    try{ await chamarManageAccess("revogar",usuario); await renderPerms(); }
+    try{ await patchUsuarioAcesso(usuario,{aprovado:false}); await renderPerms(); }
     catch(e){ alert("Não consegui revogar: "+e.message); }
   }));
   body.querySelectorAll(".perm-tipo").forEach(sel=>sel.addEventListener("change",async()=>{
     const usuario=sel.closest("tr").dataset.usuario;
     if(!sel.value) return;
-    try{ await chamarManageAccess("set-tipo",usuario,sel.value); }
+    try{ await patchUsuarioAcesso(usuario,{tipo:sel.value}); }
     catch(e){ alert("Não consegui alterar o tipo: "+e.message); }
   }));
 }

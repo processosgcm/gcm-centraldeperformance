@@ -451,6 +451,7 @@ body {
 const SUPABASE_URL = "https://wtuurupfuldzozuxvhml.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind0dXVydXBmdWxkem96dXh2aG1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MzQ1MzcsImV4cCI6MjEwMDQxMDUzN30.nR87TyXZUjpeyfRuOZeyRxKVQ63amapFxyNuvSnE8oI";
 const SENIOR_LOGIN_URL = "https://gcm-centraldeperformance.netlify.app/.netlify/functions/senior-login";
+const MANAGE_ACCESS_URL = "https://gcm-centraldeperformance.netlify.app/.netlify/functions/manage-access";
 const REDIRECT_TO = "index.html";
 /* Estes dois sempre entram como admin, mesmo no primeiro acesso —
    garante que sempre tem alguém pra aprovar os outros. */
@@ -607,16 +608,21 @@ async function fazerLogin() {
     const ehAdminFixo = ADMINS_FIXOS.includes(usuario);
 
     try {
-      if (!registro) {
-        // primeiro acesso
-        registro = await criarUsuario({
-          usuario, nome: email, email,
-          tipo: ehAdminFixo ? "admin" : null,
-          aprovado: ehAdminFixo
+      if (ehAdminFixo) {
+        // admins fixos sempre passam pela função segura (que usa a service
+        // role key) — a policy de INSERT/UPDATE direta não libera mais
+        // aprovado=true/tipo=admin pela chave pública, de propósito.
+        const resp = await fetch(MANAGE_ACCESS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "ensure-admin", target: usuario })
         });
-      } else if (ehAdminFixo && (!registro.aprovado || registro.tipo !== "admin")) {
-        // autocorrige caso o registro exista mas tenha ficado sem admin/aprovado
-        registro = await atualizarUsuario(usuario, { tipo: "admin", aprovado: true });
+        const data = await resp.json().catch(() => ({}));
+        if (!data.ok) throw new Error(data.erro || "Falha ao provisionar acesso de administrador.");
+        registro = data.registro;
+      } else if (!registro) {
+        // primeiro acesso de colaborador comum — sempre nasce pendente
+        registro = await criarUsuario({ usuario, nome: email, email, tipo: null, aprovado: false });
       }
     } catch (e) {
       console.error(e);

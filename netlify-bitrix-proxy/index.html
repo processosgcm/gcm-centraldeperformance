@@ -467,7 +467,10 @@ async function fetchDepts(){
 async function fetchUsers(){
   const all=[]; let start=0;
   while(true){
-    const d=await bx("user.get",[["ACTIVE","true"],["start",start]]);
+    // sem filtro de ACTIVE: gente desligada/afastada ainda precisa casar
+    // com tarefas históricas — senão aparece como "não localizado" mesmo
+    // tendo o nome perfeitamente igual ao do Bitrix.
+    const d=await bx("user.get",[["start",start]]);
     all.push(...(d.result||[]));
     if(d.next==null) break;
     start=d.next; if(start>5000) break;
@@ -513,8 +516,17 @@ function buildIndex(){
     (IDX_FIRST[t[0]]=IDX_FIRST[t[0]]||[]).push(u);
   });
 }
+/* Alguns registros trazem o nome do responsável com anotação colada
+   (ex.: "Luiz Baierle - No estoque", "Luiz Baierle *No estoque"). Isso faz
+   o casamento com o Bitrix falhar E faz a mesma pessoa aparecer duplicada
+   (uma vez por variação de anotação). Corta tudo depois do primeiro
+   separador desse tipo, mantendo só o nome. */
+function cleanName(raw){
+  if(!raw) return raw;
+  return String(raw).split(/\s+[-*(]\s*|\s+[-*]/)[0].trim();
+}
 function findUser(name){
-  const n=norm(name); if(!n) return null;
+  const n=norm(cleanName(name)); if(!n) return null;
   if(IDX_FULL[n]) return IDX_FULL[n];
   const t=n.split(/\s+/);
   if(t.length>=2){
@@ -599,6 +611,7 @@ function prepare(){
   if(PREPARED) return PREPARED;
   PREPARED=RAW.filter(r=>INCLUDED_STATUSES.includes(norm(r.status))).map(r=>{
     const u=findUser(r.responsavel_nome), s=sectorOf(u);
+    const nomeResp = u ? `${u.NAME} ${u.LAST_NAME}`.trim() : cleanName(r.responsavel_nome);
     const rated=r.avaliacao!=null&&r.avaliacao!=="";
     const dEnv=toDate(r.data_envio),dRes=toDate(r.data_resposta);
     const meta=TASK_META[String(r.id_tarefa)];
@@ -607,7 +620,7 @@ function prepare(){
     const slaResult=deadline?classifySLA(created||dEnv,deadline,dEnv):null;
     return {
       idTarefa:r.id_tarefa, tarefa:r.tarefa,
-      criador:r.proprietario_nome, responsavel:r.responsavel_nome, respondente:r.nome_respondente,
+      criador:r.proprietario_nome, responsavel:nomeResp, respondente:r.nome_respondente,
       justificativa:r.justificativa,
       setorId:s.id, setorNome:s.name, deptChain:s.realId?deptChainIds(s.realId):[s.id], cargo:u?(u.WORK_POSITION||""):"", achado:!!u,
       rated, sat: rated?Number(r.avaliacao)===1:true,

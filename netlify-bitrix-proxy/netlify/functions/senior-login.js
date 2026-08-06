@@ -26,8 +26,12 @@ const SOAP_SERVICE_USER = process.env.SOAP_SERVICE_USER || "";
 const SOAP_SERVICE_PASSWORD = process.env.SOAP_SERVICE_PASSWORD || "";
 const SOAP_ENCRYPTION = process.env.SOAP_ENCRYPTION || "0";
 
+// Restrito ao domínio real do painel — antes era "*" (qualquer site podia
+// usar este endpoint pra tentar logins contra a Senior).
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "https://gcm-centraldeperformance.netlify.app";
+
 const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "content-type",
 };

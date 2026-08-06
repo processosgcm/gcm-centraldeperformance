@@ -18,11 +18,14 @@
 //   BITRIX_WEBHOOK_URL = https://gcm.bitrix24.com.br/rest/935/7ie7vmhsgev5e32p/
 
 const BITRIX_WEBHOOK_URL = process.env.BITRIX_WEBHOOK_URL || "";
+// Restrito ao domínio real do painel — antes era "*" (qualquer site podia
+// chamar esta função e puxar a lista de funcionários/departamentos do Bitrix).
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "https://gcm-centraldeperformance.netlify.app";
 
 const ALLOWED_METHODS = new Set(["department.get", "user.get", "tasks.task.list"]);
 
 const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
   "Access-Control-Allow-Methods": "GET, OPTIONS",
   "Access-Control-Allow-Headers": "content-type",
 };

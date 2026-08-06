@@ -60,11 +60,11 @@ button{font-family:inherit}
 
 .wrap{max-width:1280px;margin:0 auto;padding:18px 26px 70px}
 
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-bottom:16px}
-.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:17px 19px;
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:11px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:15px 16px;
   box-shadow:var(--shadow);position:relative;overflow:hidden}
 .kpi .k{font-size:11.8px;color:var(--ink-soft);font-weight:600}
-.kpi .v{font-family:'Inter';font-weight:700;font-size:27px;font-weight:700;margin-top:7px;letter-spacing:-.015em;line-height:1.1}
+.kpi .v{font-family:'Inter';font-weight:700;font-size:24px;font-weight:700;margin-top:6px;letter-spacing:-.015em;line-height:1.1}
 .kpi .foot{margin-top:9px;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .cmp{display:inline-flex;align-items:center;gap:4px;font-size:11.8px;font-weight:600;padding:2px 8px;border-radius:6px;white-space:nowrap}
 .cmp.up{color:#00491B;background:var(--good-bg)}
@@ -489,13 +489,14 @@ async function fetchTaskMeta(ids){
     await Promise.all(chunks.slice(i,i+POOL).map(async chunk=>{
       const entries=[...chunk.map(id=>["filter[ID][]",id]),
         ["select[]","ID"],["select[]","DEADLINE"],["select[]","CREATED_DATE"],
-        ["select[]","CLOSED_DATE"],["select[]","MATCH_WORK_TIME"]];
+        ["select[]","CLOSED_DATE"],["select[]","MATCH_WORK_TIME"],["select[]","RESPONSIBLE_ID"]];
       try{
         const d=await bx("tasks.task.list",entries);
         (d.result?.tasks||d.result||[]).forEach(t=>{
           out[String(t.id??t.ID)]={createdDate:t.createdDate??t.CREATED_DATE,
             deadline:t.deadline??t.DEADLINE,closedDate:t.closedDate??t.CLOSED_DATE,
-            matchWorkTime:t.matchWorkTime??t.MATCH_WORK_TIME};
+            matchWorkTime:t.matchWorkTime??t.MATCH_WORK_TIME,
+            responsibleId:String(t.responsibleId??t.RESPONSIBLE_ID??"")};
         });
       }catch(e){ console.warn("tasks.task.list lote falhou:",e); }
       chunk.forEach(id=>metaFetched.add(id));
@@ -521,9 +522,29 @@ function buildIndex(){
    o casamento com o Bitrix falhar E faz a mesma pessoa aparecer duplicada
    (uma vez por variação de anotação). Corta tudo depois do primeiro
    separador desse tipo, mantendo só o nome. */
+// palavras que só aparecem em anotação, nunca em nome de pessoa —
+// normalizadas (sem acento) pra comparar sem depender de maiúscula/acento.
+const PALAVRAS_ANOTACAO = new Set([
+  "ferias","ferista","afastado","afastada","afastamento","licenca",
+  "licenciado","licenciada","atestado","folga","estoque","almoxarifado",
+  "temporario","temporaria","substituto","substituta","desligado","desligada",
+  "inativo","inativa","suspenso","suspensa"
+]);
 function cleanName(raw){
   if(!raw) return raw;
-  return String(raw).split(/\s+[-*(]\s*|\s+[-*]/)[0].trim();
+  // 1) corta anotação colada com separador (- * ( ...)
+  let s = String(raw).split(/\s+[-*(]\s*|\s+[-*]/)[0];
+  // 2) corta a partir do primeiro "token" com dígito OU que seja uma palavra
+  //    conhecida de anotação — cobre "Nome 13/07 á 22/07" e também
+  //    "Nome Férias 13/07 a 22/07" (a palavra "Férias" não tem dígito, mas
+  //    também nunca é sobrenome de ninguém).
+  const tokens = s.trim().split(/\s+/);
+  const idx = tokens.findIndex(t=>{
+    const tn = t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]/g,"");
+    return /\d/.test(t) || PALAVRAS_ANOTACAO.has(tn);
+  });
+  if(idx>0) tokens.length = idx;
+  return tokens.join(" ").trim();
 }
 function findUser(name){
   const n=norm(cleanName(name)); if(!n) return null;
@@ -610,11 +631,18 @@ function classifySLA(created,deadline,done){
 function prepare(){
   if(PREPARED) return PREPARED;
   PREPARED=RAW.filter(r=>INCLUDED_STATUSES.includes(norm(r.status))).map(r=>{
-    const u=findUser(r.responsavel_nome), s=sectorOf(u);
+    const meta=TASK_META[String(r.id_tarefa)];
+    // Prioridade 1: ID do responsável direto da tarefa no Bitrix — imune a
+    // qualquer anotação/erro de digitação no nome gravado no Supabase.
+    // Prioridade 2 (reserva): casamento por nome, só quando a tarefa ainda
+    // não foi consultada no Bitrix ou o ID não bateu com ninguém conhecido.
+    let u = (meta && meta.responsibleId) ? (USERS[meta.responsibleId]||null) : null;
+    let viaId = !!u;
+    if(!u) u = findUser(r.responsavel_nome);
+    const s=sectorOf(u);
     const nomeResp = u ? `${u.NAME} ${u.LAST_NAME}`.trim() : cleanName(r.responsavel_nome);
     const rated=r.avaliacao!=null&&r.avaliacao!=="";
     const dEnv=toDate(r.data_envio),dRes=toDate(r.data_resposta);
-    const meta=TASK_META[String(r.id_tarefa)];
     const created=meta?toDate(meta.createdDate):null;
     const deadline=meta?toDate(meta.deadline):null;
     const slaResult=deadline?classifySLA(created||dEnv,deadline,dEnv):null;
@@ -622,7 +650,7 @@ function prepare(){
       idTarefa:r.id_tarefa, tarefa:r.tarefa,
       criador:r.proprietario_nome, responsavel:nomeResp, respondente:r.nome_respondente,
       justificativa:r.justificativa,
-      setorId:s.id, setorNome:s.name, deptChain:s.realId?deptChainIds(s.realId):[s.id], cargo:u?(u.WORK_POSITION||""):"", achado:!!u,
+      setorId:s.id, setorNome:s.name, deptChain:s.realId?deptChainIds(s.realId):[s.id], cargo:u?(u.WORK_POSITION||""):"", achado:!!u, achadoViaId:viaId,
       rated, sat: rated?Number(r.avaliacao)===1:true,
       conclusao:dEnv, dataResposta:dRes, deadline, criado:created,
       execMs:(created&&dEnv)?(dEnv-created):null,   /* duração real do trabalho */
@@ -637,11 +665,13 @@ const invalidate=()=>{PREPARED=null;};
 
 function stats(list){
   const n=list.length, sat=list.filter(t=>t.sat).length;
+  const rated=list.filter(t=>t.rated).length;
   const ex=list.map(t=>t.execMs).filter(v=>v!=null);
   const cs=list.filter(t=>t.sla);
   const atrasadas=cs.filter(t=>t.sla==="atrasada").length;
   return {
     n, sat, insat:n-sat, satPct:n?(sat/n)*100:null,
+    rated, ratedPct:n?(rated/n)*100:null,
     avgExec: ex.length?ex.reduce((a,b)=>a+b,0)/ex.length:null,
     slaN:cs.length,
     rapidas:cs.filter(t=>t.sla==="rapida").length,
@@ -737,6 +767,9 @@ function renderKPIs(cur,prev){
     {k:"Tempo médio de execução",v:fmtDur(c.avgExec),
      foot:trendChip(c.avgExec,period?p.avgExec:null,false,d=>fmtDur(d))
           +`<span class="note" data-tip="Da criação da tarefa no Bitrix até a conclusão (data de envio).">criação → conclusão</span>`},
+    {k:"Avaliadas",v:c.ratedPct==null?"—":Math.round(c.ratedPct)+"%",
+     foot:trendChip(c.ratedPct,period?p.ratedPct:null,true,d=>d.toFixed(1)+" p.p.")
+          +`<span class="note hastip" data-tip="Tarefas em que o solicitante realmente respondeu a avaliação (Satisfeito/Insatisfeito). As demais ficam sem nota e são presumidas satisfeitas.">${nf.format(c.rated)} de ${nf.format(c.n)} responderam</span>`},
     {k:"Satisfação",v:c.satPct==null?"—":Math.round(c.satPct)+"%",
      foot:trendChip(c.satPct,period?p.satPct:null,true,d=>d.toFixed(1)+" p.p.")
           +`<span class="note">${nf.format(c.sat)} satisfeita(s)</span>`}
@@ -1392,20 +1425,28 @@ try{
 
 /* ═════════ PAINEL DE PERMISSÕES (admin) ═════════
    Mesma tabela usuarios_acesso do Supabase usada pelo login.html — assim
-   uma aprovação feita aqui já vale pra qualquer navegador/computador. */
+   uma aprovação feita aqui já vale pra qualquer navegador/computador.
+   Aprovar/revogar/trocar tipo passam pela função manage-access (que usa a
+   service role key e confere no servidor se quem pede já é admin) — a
+   chave anon não tem mais permissão de UPDATE direto nessa tabela. */
 const SB_HEADERS={apikey:SUPABASE_ANON_KEY,Authorization:`Bearer ${SUPABASE_ANON_KEY}`,"Content-Type":"application/json"};
+const MANAGE_ACCESS_URL="https://gcm-centraldeperformance.netlify.app/.netlify/functions/manage-access";
 async function listarUsuariosAcesso(){
   const res=await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso?select=*&order=created_at.asc`,{headers:SB_HEADERS});
   if(!res.ok) throw new Error(`Supabase GET ${res.status}`);
   return res.json();
 }
-async function patchUsuarioAcesso(usuario,patch){
-  const res=await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso?usuario=eq.${encodeURIComponent(usuario)}`,{
-    method:"PATCH", headers:{...SB_HEADERS,Prefer:"return=representation"},
-    body:JSON.stringify({...patch, updated_at:new Date().toISOString()})
+function requesterAtual(){
+  try{ return JSON.parse(sessionStorage.getItem("cp_session")||"null")?.usuario||null; }catch(e){ return null; }
+}
+async function chamarManageAccess(action,target,tipo){
+  const res=await fetch(MANAGE_ACCESS_URL,{
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({action, requester:requesterAtual(), target, tipo})
   });
-  if(!res.ok) throw new Error(`Supabase PATCH ${res.status}`);
-  return (await res.json())[0];
+  const data=await res.json().catch(()=>({}));
+  if(!data.ok) throw new Error(data.erro||`Falha (${res.status})`);
+  return data.registro;
 }
 let permsOpen=false;
 async function togglePerms(){
@@ -1447,19 +1488,19 @@ async function renderPerms(){
   body.querySelectorAll(".perm-aprovar").forEach(btn=>btn.addEventListener("click",async()=>{
     const usuario=btn.closest("tr").dataset.usuario;
     const tipoSel=btn.closest("tr").querySelector(".perm-tipo").value||"individual";
-    try{ await patchUsuarioAcesso(usuario,{aprovado:true,tipo:tipoSel}); await renderPerms(); }
+    try{ await chamarManageAccess("aprovar",usuario,tipoSel); await renderPerms(); }
     catch(e){ alert("Não consegui aprovar: "+e.message); }
   }));
   body.querySelectorAll(".perm-revogar").forEach(btn=>btn.addEventListener("click",async()=>{
     const usuario=btn.closest("tr").dataset.usuario;
     if(!confirm(`Revogar o acesso de ${usuario}?`)) return;
-    try{ await patchUsuarioAcesso(usuario,{aprovado:false}); await renderPerms(); }
+    try{ await chamarManageAccess("revogar",usuario); await renderPerms(); }
     catch(e){ alert("Não consegui revogar: "+e.message); }
   }));
   body.querySelectorAll(".perm-tipo").forEach(sel=>sel.addEventListener("change",async()=>{
     const usuario=sel.closest("tr").dataset.usuario;
     if(!sel.value) return;
-    try{ await patchUsuarioAcesso(usuario,{tipo:sel.value}); }
+    try{ await chamarManageAccess("set-tipo",usuario,sel.value); }
     catch(e){ alert("Não consegui alterar o tipo: "+e.message); }
   }));
 }

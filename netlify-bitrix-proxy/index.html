@@ -229,7 +229,7 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
     <button data-p="30">30 dias</button>
     <button data-p="90">90 dias</button>
     <button data-p="0">Tudo</button>
-    <button data-p="custom">Personalizado</button>
+    <button data-p="custom" id="btnPersonalizado">Personalizado</button>
   </div>
   <button class="iconbtn" id="btnSync" title="Atualizar dados">&#8635;</button>
   <button class="iconbtn" id="btnPerms" title="Gerenciar permissões" style="display:none"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></button>
@@ -255,9 +255,11 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
   <div class="panel-hd">
     <h2><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>Permissões de acesso</h2>
     <div class="gap"></div>
-    <span class="hint">aprove ou revogue o acesso dos colaboradores</span>
+    <span class="hint" id="permsCount">—</span>
   </div>
   <div class="panel-bd">
+    <input type="text" id="permsSearch" placeholder="Buscar por usuário, nome ou e-mail…"
+      style="width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 13px;font-size:13px;margin-bottom:13px;font-family:inherit">
     <div class="tablewrap">
       <table class="log" id="permsTable">
         <thead><tr><th>Usuário</th><th>Nome / e-mail</th><th>Status</th><th>Tipo de acesso</th><th>Ação</th></tr></thead>
@@ -327,7 +329,7 @@ table.log td.right{color:var(--ink-soft);white-space:nowrap}
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="logPanel">
     <div class="panel-hd"><h2>Registro de tarefas concluídas</h2><div class="gap"></div><span class="hint" id="logHint">—</span></div>
     <div class="panel-bd"><div class="tablewrap" id="logWrap">
       <div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row"></div><div class="sk sk-row"></div>
@@ -772,7 +774,7 @@ function renderKPIs(cur,prev){
           +`<span class="note hastip" data-tip="Tarefas em que o solicitante realmente respondeu a avaliação (Satisfeito/Insatisfeito). As demais ficam sem nota e são presumidas satisfeitas.">${nf.format(c.rated)} de ${nf.format(c.n)} responderam</span>`},
     {k:"Satisfação",v:c.satPct==null?"—":Math.round(c.satPct)+"%",
      foot:trendChip(c.satPct,period?p.satPct:null,true,d=>d.toFixed(1)+" p.p.")
-          +`<span class="note">${nf.format(c.sat)} satisfeita(s)</span>`}
+          +`<span class="note">${c.sat===1?"1 satisfeita":`${nf.format(c.sat)} satisfeitas`} e ${c.insat===1?"1 insatisfeita":`${nf.format(c.insat)} insatisfeitas`}</span>`}
   ];
   el("kpis").innerHTML=cards.map(x=>`<div class="kpi">${x.spark||""}
       <div class="k">${x.k}</div><div class="v num">${x.v}</div><div class="foot">${x.foot}</div></div>`).join("");
@@ -1248,7 +1250,22 @@ function exportCsv(){
 }
 
 /* ═════════ RENDER ═════════ */
+function aplicarRestricoesDeAcesso(){
+  try{
+    const s=JSON.parse(sessionStorage.getItem("cp_session")||"null");
+    const btnP=el("btnPersonalizado"), lp=el("logPanel");
+    if(s && s.tipo==="individual"){
+      if(btnP) btnP.style.display="none";
+      if(lp) lp.style.display="none";
+      if(period==="custom") period=7;
+    }else{
+      if(btnP) btnP.style.display="";
+      if(lp) lp.style.display="";
+    }
+  }catch(e){}
+}
 function render(){
+  aplicarRestricoesDeAcesso();
   const all=prepare();
   fillEntitySelect(all);
   const filtered=applyFilters(all);
@@ -1416,10 +1433,12 @@ document.addEventListener("keydown",e=>{
 });
 try{
   const s=JSON.parse(sessionStorage.getItem("cp_session")||"null");
-  if(s) el("whoTxt").textContent=(s.nome||s.email||s.usuario||"")+(s.tipo?` · ${s.tipo}`:"");
+  const ROTULO_TIPO={admin:"Administrador",geral:"Diretoria",individual:"Básico"};
+  if(s) el("whoTxt").textContent=(s.nome||s.email||s.usuario||"")+(s.tipo?` · ${ROTULO_TIPO[s.tipo]||s.tipo}`:"");
   if(s && s.tipo==="admin"){
     el("btnPerms").style.display="flex";
     el("btnPerms").addEventListener("click",togglePerms);
+    el("permsSearch").addEventListener("input",debounce(()=>{ permsQuery=el("permsSearch").value; renderPermsFiltrado(); },150));
   }
 }catch(e){}
 
@@ -1449,6 +1468,8 @@ async function chamarManageAccess(action,target,tipo){
   return data.registro;
 }
 let permsOpen=false;
+let __todosUsuariosAcesso=[];
+let permsQuery="";
 async function togglePerms(){
   permsOpen=!permsOpen;
   el("permsPanel").style.display=permsOpen?"block":"none";
@@ -1457,12 +1478,16 @@ async function togglePerms(){
 async function renderPerms(){
   const body=el("permsBody"), empty=el("permsEmpty");
   body.innerHTML=`<tr><td colspan="5" class="thin">carregando…</td></tr>`;
-  let usuarios;
-  try{ usuarios=await listarUsuariosAcesso(); }
+  try{ __todosUsuariosAcesso=await listarUsuariosAcesso(); }
   catch(e){ body.innerHTML=`<tr><td colspan="5" class="thin">Não consegui carregar (${esc(e.message)}). Confirme se a tabela usuarios_acesso e sua policy de SELECT existem.</td></tr>`; return; }
-
-  const lista=usuarios.filter(u=>!["rafael.pieretti","caroline.queiroz"].includes(u.usuario));
-  if(!lista.length){ body.innerHTML=""; empty.style.display="block"; return; }
+  renderPermsFiltrado();
+}
+function renderPermsFiltrado(){
+  const body=el("permsBody"), empty=el("permsEmpty");
+  const q=norm(permsQuery);
+  const lista=__todosUsuariosAcesso.filter(u=>!q||norm(u.usuario).includes(q)||norm(u.nome||"").includes(q)||norm(u.email||"").includes(q));
+  el("permsCount").textContent=q?`${lista.length} de ${__todosUsuariosAcesso.length}`:`${lista.length} login(s) registrado(s)`;
+  if(!lista.length){ body.innerHTML=""; empty.style.display="block"; empty.textContent=q?"Nenhum usuário encontrado com essa busca.":"Nenhum colaborador registrado ainda."; return; }
   empty.style.display="none";
 
   body.innerHTML=lista.map(u=>`
@@ -1473,8 +1498,8 @@ async function renderPerms(){
       <td>
         <select class="perm-tipo" style="padding:5px 8px;border-radius:6px;border:1px solid var(--line);font-size:12.5px">
           <option value="">Selecionar…</option>
-          <option value="geral" ${u.tipo==="geral"?"selected":""}>Geral (todos os setores)</option>
-          <option value="individual" ${u.tipo==="individual"?"selected":""}>Individual (só seu usuário)</option>
+          <option value="geral" ${u.tipo==="geral"?"selected":""}>Diretoria</option>
+          <option value="individual" ${u.tipo==="individual"?"selected":""}>Básico</option>
           <option value="admin" ${u.tipo==="admin"?"selected":""}>Administrador</option>
         </select>
       </td>

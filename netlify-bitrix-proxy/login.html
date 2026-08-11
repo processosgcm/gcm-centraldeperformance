@@ -445,17 +445,12 @@ body {
 
 <script>
 /* ═══════════════ CONFIG ═══════════════
-   Mesmo projeto Supabase do painel — só uma tabela nova, usuarios_acesso,
-   pra guardar quem tem acesso liberado (substitui o localStorage antigo,
-   que não sincronizava entre navegadores/computadores diferentes). */
-const SUPABASE_URL = "https://wtuurupfuldzozuxvhml.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind0dXVydXBmdWxkem96dXh2aG1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4MzQ1MzcsImV4cCI6MjEwMDQxMDUzN30.nR87TyXZUjpeyfRuOZeyRxKVQ63amapFxyNuvSnE8oI";
+   Mesmo projeto Supabase do painel, mas o login não fala com o Supabase
+   direto — todo acesso passa pela função manage-access (service role key,
+   nunca exposta no navegador). */
 const SENIOR_LOGIN_URL = "https://gcm-centraldeperformance.netlify.app/.netlify/functions/senior-login";
 const MANAGE_ACCESS_URL = "https://gcm-centraldeperformance.netlify.app/.netlify/functions/manage-access";
 const REDIRECT_TO = "index.html";
-/* Estes dois sempre entram como admin, mesmo no primeiro acesso —
-   garante que sempre tem alguém pra aprovar os outros. */
-const ADMINS_FIXOS = ["rafael.pieretti", "caroline.queiroz"];
 
 /* ===== PARTÍCULAS (decorativo) ===== */
 (function () {
@@ -498,39 +493,6 @@ const ADMINS_FIXOS = ["rafael.pieretti", "caroline.queiroz"];
   }
   if (!matchMedia("(prefers-reduced-motion: reduce)").matches) { init(); draw(); window.addEventListener("resize", init); }
 })();
-
-/* ═══════════════ SUPABASE: tabela usuarios_acesso ═══════════════ */
-const SB_HEADERS = {
-  apikey: SUPABASE_ANON_KEY,
-  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-  "Content-Type": "application/json"
-};
-async function buscarUsuario(usuario) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso?usuario=eq.${encodeURIComponent(usuario)}&select=*`, { headers: SB_HEADERS });
-  if (!res.ok) throw new Error(`Supabase GET ${res.status}`);
-  const rows = await res.json();
-  return rows[0] || null;
-}
-async function criarUsuario(row) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso`, {
-    method: "POST",
-    headers: { ...SB_HEADERS, Prefer: "return=representation" },
-    body: JSON.stringify(row)
-  });
-  if (!res.ok) throw new Error(`Supabase POST ${res.status}`);
-  const rows = await res.json();
-  return rows[0];
-}
-async function atualizarUsuario(usuario, patch) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/usuarios_acesso?usuario=eq.${encodeURIComponent(usuario)}`, {
-    method: "PATCH",
-    headers: { ...SB_HEADERS, Prefer: "return=representation" },
-    body: JSON.stringify({ ...patch, updated_at: new Date().toISOString() })
-  });
-  if (!res.ok) throw new Error(`Supabase PATCH ${res.status}`);
-  const rows = await res.json();
-  return rows[0];
-}
 
 /* ═══════════════ SESSÃO ═══════════════ */
 function getSessao() {
@@ -596,34 +558,18 @@ async function fazerLogin() {
     const email = data.email || usuario;
     let registro;
     try {
-      registro = await buscarUsuario(usuario);
-    } catch (e) {
-      console.error(e);
-      setStatus("");
-      showMsg("Login válido, mas não consegui checar sua permissão de acesso agora. Tente novamente.", "error");
-      resetBtn();
-      return;
-    }
-
-    const ehAdminFixo = ADMINS_FIXOS.includes(usuario);
-
-    try {
-      if (ehAdminFixo) {
-        // admins fixos sempre passam pela função segura (usa a service role
-        // key) — a policy de INSERT/UPDATE direta não libera mais
-        // aprovado=true/tipo=admin pela chave pública, de propósito.
-        const resp = await fetch(MANAGE_ACCESS_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "ensure-admin", target: usuario })
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!data.ok) throw new Error(data.erro || "Falha ao provisionar acesso de administrador.");
-        registro = data.registro;
-      } else if (!registro) {
-        // primeiro acesso de colaborador comum — sempre nasce pendente
-        registro = await criarUsuario({ usuario, nome: email, email, tipo: null, aprovado: false });
-      }
+      // Todo login passa por aqui — não existe mais lista fixa de admin no
+      // código. Usuário novo nasce com acesso Básico automático; quem
+      // precisa de Diretoria ou Administrador recebe de outro admin, no
+      // painel de permissões.
+      const resp = await fetch(MANAGE_ACCESS_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "ensure-login", target: usuario, nome: email, email })
+      });
+      const respData = await resp.json().catch(() => ({}));
+      if (!respData.ok) throw new Error(respData.erro || "Falha ao registrar seu acesso.");
+      registro = respData.registro;
     } catch (e) {
       console.error(e);
       setStatus("");

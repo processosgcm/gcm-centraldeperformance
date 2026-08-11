@@ -1,37 +1,45 @@
-// Netlify Function (v2 / ESM) — gerencia aprovações de acesso com segurança.
+// Netlify Function (v2 / ESM) — gerencia login/aprovação de acesso com segurança.
 //
 // POR QUE ISSO EXISTE
-// A tabela usuarios_acesso não aceita mais UPDATE direto pela chave anon
-// (a mesma chave que já é pública no HTML do painel). Antes, isso permitia
-// que qualquer pessoa técnica se autoaprovasse como admin chamando a API
-// do Supabase direto, sem passar pela tela — ver aviso no usuarios_acesso.sql.
+// A tabela usuarios_acesso não aceita UPDATE nem INSERT direto pela chave
+// anon (a mesma chave que já é pública no HTML do painel) — só SELECT.
+// Isso impede qualquer pessoa técnica de se autoaprovar/promover chamando
+// a API do Supabase direto, sem passar por aqui.
 //
-// Esta função é o ÚNICO lugar que grava aprovação/tipo/revogação. Ela usa a
-// SERVICE ROLE KEY do Supabase (que ignora RLS), guardada só como variável
-// de ambiente aqui no servidor — nunca aparece no navegador. Antes de gravar
-// qualquer mudança, ela confere se quem está pedindo (`requester`) já é um
-// admin aprovado, consultando o banco.
+// Esta função é o ÚNICO lugar que cria ou grava mudança na tabela. Ela usa
+// a SERVICE ROLE KEY do Supabase (que ignora RLS), guardada só como
+// variável de ambiente aqui no servidor — nunca aparece no navegador.
+//
+// MODELO DE ACESSO
+//   - Todo primeiro login (via "ensure-login") nasce com tipo "individual"
+//     (rótulo na tela: "Básico") e JÁ APROVADO — não precisa de admin pra
+//     começar a usar o painel no nível básico.
+//   - Virar "geral" (rótulo: "Diretoria") ou "admin" só acontece se outro
+//     administrador conceder isso no painel de permissões.
+//   - Não existe mais lista fixa de admin no código — quem já é admin no
+//     banco continua admin; não tem bootstrap automático de ninguém.
+//   - O sistema nunca deixa remover/revogar o ÚLTIMO admin aprovado, pra
+//     não travar o acesso de todo mundo ao painel de permissões.
 //
 // LIMITAÇÃO HONESTA: como o login não emite uma sessão assinada pelo
-// servidor, "quem está pedindo" aqui é só o nome de usuário que o próprio
-// navegador informa — não há prova criptográfica de que quem está do outro
-// lado realmente é aquele admin. Isso fecha a brecha de "chamar a API direto
-// e se autoaprovar sem NUNCA ter feito login", mas ainda depende de que
-// sessionStorage não seja forjado por alguém que já saiba o usuário de um
-// admin de verdade. Uma proteção completa exigiria Supabase Auth ou um JWT
-// assinado no login.
+// servidor, "quem está pedindo" (requester) é só o nome de usuário que o
+// próprio navegador informa — não há prova criptográfica de que quem está
+// do outro lado realmente é aquele admin. Isso fecha a brecha de "chamar a
+// API direto e se autoaprovar sem NUNCA ter feito login", mas ainda depende
+// de que sessionStorage não seja forjado por alguém que já saiba o usuário
+// de um admin de verdade. Uma proteção completa exigiria Supabase Auth ou
+// um JWT assinado no login.
 //
 // AÇÕES (POST, body JSON)
-//   { action:"aprovar",  requester, target, tipo }   tipo: admin|geral|individual
+//   { action:"ensure-login", target, nome, email }        sem requester
+//   { action:"aprovar",  requester, target, tipo }        tipo: admin|geral|individual
 //   { action:"revogar",  requester, target }
 //   { action:"set-tipo", requester, target, tipo }
-//   { action:"ensure-admin", target }                 sem requester — só para
-//                                                      os admins fixos, ver abaixo
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://wtuurupfuldzozuxvhml.supabase.co";
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-const ADMINS_FIXOS = ["rafael.pieretti", "caroline.queiroz"];
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "https://gcm-centraldeperformance.netlify.app";
+const TIPOS_VALIDOS = ["admin", "geral", "individual"];
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
@@ -80,12 +88,31 @@ async function criarUsuario(row) {
   return rows[0];
 }
 
+// Quantos OUTROS usuários (fora `target`) são admin aprovado agora?
+async function contarOutrosAdmins(target) {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/usuarios_acesso?tipo=eq.admin&aprovado=eq.true&usuario=neq.${encodeURIComponent(target)}&select=usuario`,
+    { headers: SB_HEADERS() }
+  );
+  if (!res.ok) throw new Error(`Supabase GET ${res.status}`);
+  const rows = await res.json();
+  return rows.length;
+}
+
 // Confere, consultando o banco (não confiando em nada vindo do navegador
 // além do NOME do usuário), se quem está pedindo já é admin aprovado.
 async function ehAdminDeVerdade(usuario) {
   if (!usuario) return false;
   const reg = await buscarUsuario(usuario);
   return !!(reg && reg.aprovado && reg.tipo === "admin");
+}
+
+// true se a mudança pedida tiraria o status de "admin aprovado" de alguém
+// que hoje tem esse status.
+function estaSaindoDeAdmin(atual, novoTipo, novoAprovado) {
+  const eraAdminAprovado = !!(atual && atual.tipo === "admin" && atual.aprovado);
+  const vaiContinuarAdminAprovado = novoTipo === "admin" && novoAprovado;
+  return eraAdminAprovado && !vaiContinuarAdminAprovado;
 }
 
 export default async (req) => {
@@ -103,41 +130,53 @@ export default async (req) => {
   const { action, requester, target, tipo } = body;
 
   try {
-    // Auto-provisionamento dos dois admins fixos, logo após o login válido
-    // com a Senior. Não depende de "requester" ser admin (ninguém é admin
-    // ainda na primeira vez) — só aceita se `target` estiver na lista fixa
-    // de usuários, decidida aqui no servidor, não pelo que o navegador manda.
-    if (action === "ensure-admin") {
-      if (!ADMINS_FIXOS.includes(target)) {
-        return json({ erro: "Usuário não está na lista de administradores fixos." }, 403);
-      }
-      const existente = await buscarUsuario(target);
-      let registro;
-      if (!existente) {
-        registro = await criarUsuario({ usuario: target, nome: target, email: target, tipo: "admin", aprovado: true });
-      } else if (!existente.aprovado || existente.tipo !== "admin") {
-        registro = await atualizarUsuario(target, { tipo: "admin", aprovado: true });
-      } else {
-        registro = existente;
+    // Login (qualquer usuário, sem precisar já ser admin de ninguém).
+    // Nasce Básico e já aprovado; se já existir, só devolve o que já tem.
+    if (action === "ensure-login") {
+      if (!target) return json({ erro: "Usuário (target) obrigatório." }, 400);
+      let registro = await buscarUsuario(target);
+      if (!registro) {
+        registro = await criarUsuario({
+          usuario: target,
+          nome: body.nome || target,
+          email: body.email || target,
+          tipo: "individual",
+          aprovado: true,
+        });
       }
       return json({ ok: true, registro });
     }
 
+    // Todas as demais ações exigem que quem está pedindo já seja admin aprovado.
     if (!(await ehAdminDeVerdade(requester))) {
       return json({ erro: "Apenas administradores aprovados podem gerenciar acessos." }, 403);
     }
 
     if (action === "aprovar") {
-      if (!["admin", "geral", "individual"].includes(tipo)) return json({ erro: "Tipo de acesso inválido." }, 400);
+      if (!TIPOS_VALIDOS.includes(tipo)) return json({ erro: "Tipo de acesso inválido." }, 400);
+      const atual = await buscarUsuario(target);
+      if (estaSaindoDeAdmin(atual, tipo, true) && (await contarOutrosAdmins(target)) === 0) {
+        return json({ erro: "Não é possível remover o último administrador do sistema." }, 409);
+      }
       const registro = await atualizarUsuario(target, { aprovado: true, tipo });
       return json({ ok: true, registro });
     }
+
     if (action === "revogar") {
+      const atual = await buscarUsuario(target);
+      if (estaSaindoDeAdmin(atual, atual?.tipo, false) && (await contarOutrosAdmins(target)) === 0) {
+        return json({ erro: "Não é possível revogar o último administrador do sistema." }, 409);
+      }
       const registro = await atualizarUsuario(target, { aprovado: false });
       return json({ ok: true, registro });
     }
+
     if (action === "set-tipo") {
-      if (!["admin", "geral", "individual"].includes(tipo)) return json({ erro: "Tipo de acesso inválido." }, 400);
+      if (!TIPOS_VALIDOS.includes(tipo)) return json({ erro: "Tipo de acesso inválido." }, 400);
+      const atual = await buscarUsuario(target);
+      if (estaSaindoDeAdmin(atual, tipo, atual?.aprovado) && (await contarOutrosAdmins(target)) === 0) {
+        return json({ erro: "Não é possível remover o último administrador do sistema." }, 409);
+      }
       const registro = await atualizarUsuario(target, { tipo });
       return json({ ok: true, registro });
     }

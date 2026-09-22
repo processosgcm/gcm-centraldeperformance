@@ -126,6 +126,10 @@ button{font-family:inherit}
   padding:4px 8px 4px 12px;font-size:11.5px;color:var(--brand);font-weight:600}
 .chip button{background:none;border:0;color:inherit;cursor:pointer;font-size:14px;opacity:.6;padding:0 2px;line-height:1}
 .chip button:hover{opacity:1}
+/* "Limpar tudo" ao lado dos filtros ativos (antes ficava com o visual padrão do navegador) */
+.chipbar .ghost{background:none;border:1px dashed var(--ink-faint);color:var(--ink-soft);border-radius:20px;
+  padding:3px 11px;font-size:11.5px;cursor:pointer;font-weight:600}
+.chipbar .ghost:hover{border-style:solid;color:var(--brand)}
 
 .panel{background:var(--card);border:1px solid var(--line);border-radius:var(--r);box-shadow:var(--shadow);margin-bottom:16px}
 .panel-hd{display:flex;align-items:center;gap:10px;padding:15px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}
@@ -152,6 +156,9 @@ button{font-family:inherit}
 .breadcrumb .crumb:last-child:hover{background:none}
 .breadcrumb .sep{color:var(--ink-faint);font-size:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(276px,1fr));gap:12px}
+/* título "Lotados direto em …" entre os cartões de setor e os de pessoa */
+.grid-sep{grid-column:1/-1;font-size:10.5px;color:var(--ink-faint);text-transform:uppercase;
+  letter-spacing:.06em;font-weight:700;margin-top:6px}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .fade-in{animation:fadeIn .1s ease}
 .colab-row{display:flex;align-items:center;gap:12px;padding:9px 14px;border:1px solid var(--line);border-radius:10px;margin-bottom:6px;cursor:pointer;background:#fff;transition:.12s}
@@ -691,7 +698,7 @@ function sectorOf(u){
 
 /* ═════════ PRAZO ═════════
    Classificação pelo % do tempo total (criação → prazo) já consumido até a
-   conclusão (data de conclusão da tarefa no Bitrix):
+   entrega pelo responsável (ver "Conclusão" em prepare()):
      ≤30%        → Rápida
      31% a 90%   → Normal
      91% a 100%  → No prazo
@@ -762,11 +769,21 @@ function prepare(){
     const rated=r.avaliacao!=null&&r.avaliacao!=="";
     if(rated&&Number(r.avaliacao)!==1&&Number(r.avaliacao)!==2) antigas++;
     const dEnv=toDate(r.data_envio),dRes=toDate(r.data_resposta);
-    /* Conclusão = data de conclusão da tarefa no Bitrix (CLOSED_DATE). Se a
-       tarefa não tiver essa data (reaberta, excluída, sem acesso ou Bitrix
-       fora do ar), usa a data de envio da avaliação como reserva. */
+    /* Conclusão = ENTREGA do responsável: a mais cedo entre a conclusão no
+       Bitrix (CLOSED_DATE) e o envio da avaliação.
+       - Tarefa que exige aceite: o Bitrix só registra a conclusão no aceite
+         do criador; a avaliação sai quando o responsável entrega (status
+         "aguardando aceite"), então vale o envio e a demora do criador em
+         aceitar não conta no prazo de quem executou.
+       - Avaliação que saiu tarde (tarefa mexida depois de concluída): a data
+         do Bitrix é a mais cedo e continua valendo.
+       Sem data no Bitrix (reaberta, excluída, sem acesso, Bitrix fora do ar),
+       fica a data de envio. */
     const fechadaBitrix=meta?toDate(meta.closedDate):null;
-    const conclusao=fechadaBitrix||dEnv;
+    const entregaAntes=!!(fechadaBitrix&&dEnv&&dEnv<fechadaBitrix);
+    const conclusao=entregaAntes?dEnv:(fechadaBitrix||dEnv);
+    /* diferença grande entre entrega e conclusão no Bitrix: aceite ou reabertura */
+    const aceiteDepois=entregaAntes&&(fechadaBitrix-dEnv)>10*60*1000;
     const created=meta?toDate(meta.createdDate):null;
     const deadline=meta?toDate(meta.deadline):null;
     /* Sem prazo = tarefa consultada no Bitrix e sem DEADLINE → conta como
@@ -781,7 +798,7 @@ function prepare(){
       justificativa:r.justificativa, aguardandoJust:norm(r.status)===WAITING_STATUS,
       setorId:s.id, setorNome:s.name, deptChain:deptChainIds(s.id), cargo:u?(u.WORK_POSITION||""):"", achado:!!u, achadoViaId:viaId,
       rated, sat: rated?Number(r.avaliacao)===1:true,
-      conclusao, conclusaoBitrix:!!fechadaBitrix, dataEnvio:dEnv, dataResposta:dRes, deadline, criado:created,
+      conclusao, conclusaoBitrix:!!fechadaBitrix, fechadaBitrix, aceiteDepois, dataEnvio:dEnv, dataResposta:dRes, deadline, criado:created,
       execMs:(created&&conclusao)?(conclusao-created):null,   /* duração real do trabalho */
       avalMs:(dEnv&&dRes)?(dRes-dEnv):null,                   /* latência da avaliação */
       semPrazo,
@@ -918,7 +935,7 @@ function sparkline(list){
 }
 function renderKPIs(cur,prev){
   const c=stats(cur),p=stats(prev), semDados=cur.length-c.slaN;
-  const slaFormula="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Tarefas sem prazo no Bitrix contam como No prazo.";
+  const slaFormula="Classificação pelo % do prazo consumido até a entrega: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Tarefas sem prazo no Bitrix contam como No prazo.";
   const cards=[
     {k:"Concluídas",v:nf.format(c.n),spark:sparkline(cur),
      foot:trendChip(c.n,period?p.n:null,true,d=>nf.format(Math.round(d))+" tarefas")},
@@ -929,7 +946,7 @@ function renderKPIs(cur,prev){
           +(semDados?`<span class="note warn" data-tip="Não foi possível consultar estas tarefas no Bitrix (excluídas, sem acesso ou falha na consulta), então ficam fora deste indicador.">⚠ ${nf.format(semDados)} sem dados do Bitrix</span>`:"")},
     {k:"Tempo médio de execução",v:fmtDur(c.avgExec),
      foot:trendChip(c.avgExec,period?p.avgExec:null,false,d=>fmtDur(d))
-          +`<span class="note" data-tip="Da criação até a conclusão da tarefa no Bitrix.">criação → conclusão</span>`},
+          +`<span class="note" data-tip="Da criação da tarefa até a entrega pelo responsável. Se a tarefa exige aceite, a espera pelo aceite do criador não entra.">criação → entrega</span>`},
     {k:"Avaliadas",v:c.ratedPct==null?"—":Math.round(c.ratedPct)+"%",
      foot:trendChip(c.ratedPct,period?p.ratedPct:null,true,d=>d.toFixed(1)+" p.p.")
           +`<span class="note hastip" data-tip="Tarefas em que o solicitante realmente respondeu a avaliação (Satisfeito/Insatisfeito). As demais ficam sem nota e são presumidas satisfeitas.">${nf.format(c.rated)} de ${nf.format(c.n)} responderam</span>`},
@@ -1079,7 +1096,14 @@ function renderTrendAnual(list){
 }
 
 /* ═════════ GRADE ═════════ */
-const TIP_NO_PRAZO="Classificação pelo % do prazo consumido até a conclusão: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Este indicador conta tudo que NÃO é Atrasada. Tarefas sem prazo no Bitrix contam como No prazo.";
+/* a conta por trás do % de "No prazo" de um cartão */
+function resumoPrazo(s){
+  if(!s.slaN) return "Sem dados de prazo do Bitrix para estas tarefas.";
+  return `${s.slaN-s.atrasadas} de ${s.slaN} dentro do prazo`
+    +(s.atrasadas?` · ${s.atrasadas} atrasada(s)`:"")
+    +(s.n>s.slaN?` · ${s.n-s.slaN} sem dados do Bitrix`:"");
+}
+const TIP_NO_PRAZO="Classificação pelo % do prazo consumido até a entrega: até 30% do tempo = Rápida · 31% a 90% = Normal · 91% a 100% = No prazo · acima de 100% (passou do prazo) = Atrasada. Este indicador conta tudo que NÃO é Atrasada. Tarefas sem prazo no Bitrix contam como No prazo.";
 function ringSvg(pct){
   if(pct==null) return `<svg class="ring" width="42" height="42" viewBox="0 0 42 42" aria-hidden="true">
     <circle cx="21" cy="21" r="16" fill="none" stroke="#EEF1F8" stroke-width="4"/>
@@ -1214,11 +1238,14 @@ function renderSectorHierarchy(list){
     return;
   }
 
-  el("gridHint").textContent = `${rows.length} setor(es) · clique para navegar`+(directItems.length?` · ${directItems.length} tarefa(s) direto neste nível`:"");
+  /* pessoas lotadas no próprio setor, fora dos subsetores */
+  const diretos=new Map();
+  directItems.forEach(t=>{ const k=t.pessoaId; if(!diretos.has(k)) diretos.set(k,{label:t.pessoaLabel,items:[]}); diretos.get(k).items.push(t); });
+  el("gridHint").textContent = `${rows.length} setor(es) · clique para navegar`+(diretos.size?` · ${diretos.size} pessoa(s) lotada(s) direto neste setor`:"");
   box.innerHTML = rows.map(([key,grp])=>{
     const s=stats(grp.items);
     const pc=s.noPrazoPct==null?"#9AA0B4":s.noPrazoPct>=85?"#00973A":s.noPrazoPct>=60?"#BA560B":"#DE001A";
-    return `<div class="entity" data-key="${esc(key)}" tabindex="0" role="button">
+    return `<div class="entity" data-setor="${esc(key)}" tabindex="0" role="button">
       <div class="entity-hd">
         <div class="avatar">${esc(initials(grp.nome||grp.label))}</div>
         <div style="min-width:0;flex:1">
@@ -1230,31 +1257,21 @@ function renderSectorHierarchy(list){
       <div class="mgrid">
         <div><div class="k">Quantidade</div><div class="v">${nf.format(s.n)}</div></div>
         <div><div class="k">Tempo</div><div class="v">${fmtDur(s.avgExec)}</div></div>
-        <div><div class="k hastip" data-tip="${esc(TIP_NO_PRAZO)}">No prazo</div><div class="v" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
+        <div><div class="k hastip" data-tip="${esc(TIP_NO_PRAZO)}">No prazo</div><div class="v" style="color:${pc};cursor:help" data-tip="${esc(resumoPrazo(s))}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
       </div></div>`;
   }).join("");
 
-  if(directItems.length){
-    const s=stats(directItems);
-    box.innerHTML += `<div class="entity" style="cursor:default">
-      <div class="entity-hd">
-        <div class="avatar">👤</div>
-        <div style="min-width:0;flex:1">
-          <div class="nm">Equipe direta deste setor</div>
-          <div class="sub">${s.n} tarefa(s) · lotados aqui, sem sub-dpto</div>
-        </div>
-        ${ringSvg(s.satPct)}
-      </div>
-      <div class="mgrid">
-        <div><div class="k">Quantidade</div><div class="v">${nf.format(s.n)}</div></div>
-        <div><div class="k">Tempo</div><div class="v">${fmtDur(s.avgExec)}</div></div>
-        <div><div class="k hastip" data-tip="${esc(TIP_NO_PRAZO)}">No prazo</div><div class="v">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
-      </div></div>`;
+  /* quem está lotado no próprio setor aparece com o nome, um cartão por
+     pessoa, como na última camada da árvore (antes era um cartão só,
+     "Equipe direta deste setor", sem os nomes) */
+  if(diretos.size){
+    box.innerHTML += `<div class="grid-sep">Lotados direto em ${esc(deptName(activeEntity))}</div>`
+      + personCardsHtml([...diretos.entries()].sort((a,b)=>b[1].items.length-a[1].items.length), {clickable:false, tempoLabel:"Tempo"});
   }
 
-  box.querySelectorAll(".entity[data-key]").forEach(card=>{
+  box.querySelectorAll(".entity[data-setor]").forEach(card=>{
     const act=()=>{
-      activeEntity=card.dataset.key;               // navegar sempre entra (não é toggle)
+      activeEntity=card.dataset.setor;             // navegar sempre entra (não é toggle)
       leafPersonFilter=null;
       el("fEntity").value=activeEntity||"";
       rowLimit=100; render();
@@ -1265,10 +1282,10 @@ function renderSectorHierarchy(list){
   bindTips(box);
   fadeIn(box);
 }
-/* ---- cartão de pessoa reutilizável (colaborador flat e folha do setor) ---- */
-function renderPersonCards(box, rows, opts){
-  if(!rows.length){ box.innerHTML=`<div class="thin">Nenhum registro no filtro atual.</div>`; return; }
-  box.innerHTML = rows.map(([key,grp])=>{
+/* ---- cartão de pessoa reutilizável (última camada da árvore e lotados
+   direto num setor que também tem subsetores) ---- */
+function personCardsHtml(rows, opts){
+  return rows.map(([key,grp])=>{
     const s=stats(grp.items), t0=grp.items[0];
     const fora=!t0.achado;
     const pc=s.noPrazoPct==null?"#9AA0B4":s.noPrazoPct>=85?"#00973A":s.noPrazoPct>=60?"#BA560B":"#DE001A";
@@ -1286,9 +1303,13 @@ function renderPersonCards(box, rows, opts){
       <div class="mgrid">
         <div><div class="k">Quantidade</div><div class="v">${nf.format(s.n)}</div></div>
         <div><div class="k">${opts.tempoLabel||"Tempo"}</div><div class="v">${fmtDur(s.avgExec)}</div></div>
-        <div><div class="k hastip" data-tip="${esc(TIP_NO_PRAZO)}">No prazo</div><div class="v" style="color:${pc}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
+        <div><div class="k hastip" data-tip="${esc(TIP_NO_PRAZO)}">No prazo</div><div class="v" style="color:${pc};cursor:help" data-tip="${esc(resumoPrazo(s))}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"}</div></div>
       </div></div>`;
   }).join("");
+}
+function renderPersonCards(box, rows, opts){
+  if(!rows.length){ box.innerHTML=`<div class="thin">Nenhum registro no filtro atual.</div>`; return; }
+  box.innerHTML = personCardsHtml(rows, opts);
   bindTips(box);
   if(!opts.clickable) return;
   box.querySelectorAll(".entity").forEach(card=>{
@@ -1349,10 +1370,15 @@ function renderLog(list){
       ? "Tarefa sem prazo cadastrado no Bitrix — contada como No prazo."
       : t.sla
       ? (t.slaPct!=null
-          ? `${Math.round(t.slaPct)}% do prazo consumido — criada ${fmtParts(t.criado).date} ${fmtParts(t.criado).time}, prazo ${fmtParts(t.deadline).date} ${fmtParts(t.deadline).time}, concluída ${fmtParts(t.conclusao).date} ${fmtParts(t.conclusao).time}. Faixas: até 30% Rápida · 31–90% Normal · 91–100% No prazo · acima de 100% Atrasada.`
+          ? `${Math.round(t.slaPct)}% do prazo consumido — criada ${fmtParts(t.criado).date} ${fmtParts(t.criado).time}, prazo ${fmtParts(t.deadline).date} ${fmtParts(t.deadline).time}, entregue ${fmtParts(t.conclusao).date} ${fmtParts(t.conclusao).time}. Faixas: até 30% Rápida · 31–90% Normal · 91–100% No prazo · acima de 100% Atrasada.`
           : `Prazo já vencido no momento da criação — concluída ${t.conclusao<=t.deadline?"dentro":"depois"} do prazo final.`)
       : "Não foi possível consultar esta tarefa no Bitrix (excluída, sem acesso ou falha na consulta), então ela fica fora do indicador de prazo.";
     const dp=fmtParts(t.conclusao);
+    const fb=t.aceiteDepois?fmtParts(t.fechadaBitrix):null;
+    const dtTip=!t.conclusaoBitrix
+      ? "Sem data de conclusão no Bitrix (tarefa reaberta, excluída ou não consultada) — mostrando a data de envio da avaliação."
+      : fb ? `Entregue pelo responsável nesta data. No Bitrix a tarefa só foi concluída em ${fb.date} ${fb.time} (aceite do criador ou reabertura); essa espera não conta no prazo.`
+      : "";
     return `<tr>
       <td><div class="tk">${esc(t.tarefa||"(sem título)")}<small>#${esc(t.idTarefa||"—")}</small></div></td>
       <td class="who">${esc(t.setorNome)}</td>
@@ -1361,7 +1387,7 @@ function renderLog(list){
       <td>${aval}</td>
       <td><span class="pill ${sc} hastip" data-tip="${esc(slaTip)}">${sl}</span></td>
       <td class="right">${fmtDur(t.execMs)}</td>
-      <td class="right"><div class="dt"${t.conclusaoBitrix?"":` data-tip="Sem data de conclusão no Bitrix (tarefa reaberta, excluída ou não consultada) — mostrando a data de envio da avaliação."`}><span class="d">${dp.date}</span><span class="h">${dp.time}${t.conclusaoBitrix?"":" (envio)"}</span></div></td>
+      <td class="right"><div class="dt"${dtTip?` data-tip="${esc(dtTip)}"`:""}><span class="d">${dp.date}</span><span class="h">${dp.time}${t.conclusaoBitrix?"":" (envio)"}</span></div></td>
     </tr>`;
   }).join("")}</tbody></table>${
     arr.length>shown.length

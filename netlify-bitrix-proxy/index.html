@@ -432,6 +432,19 @@ const norm=s=>(s||"").toString().trim().toLowerCase().normalize("NFD").replace(/
 const esc=s=>(s==null?"":String(s)).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const initials=n=>{const p=(n||"?").trim().split(/\s+/);return ((p[0]?.[0]||"")+(p[1]?.[0]||"")).toUpperCase();};
 const nf=new Intl.NumberFormat("pt-BR");
+/* Satisfação com uma casa decimal: 99,6. Número redondo fica sem a casa
+   (100). O arredondamento nunca escreve 100 nem 0 para quem não teve
+   exatamente isso — para em 99,9 e em 0,1. */
+const nf1=new Intl.NumberFormat("pt-BR",{minimumFractionDigits:1,maximumFractionDigits:1});
+function satNum(v){
+  if(v==null) return "—";
+  if(Number.isInteger(v)) return nf.format(v);
+  let x=Math.round(v*10)/10;
+  if(x>=100) x=99.9;
+  if(x<=0) x=0.1;
+  return nf1.format(x);
+}
+const fmtSat=v=>v==null?"—":satNum(v)+"%";
 const debounce=(fn,ms)=>{let t;return(...a)=>{clearTimeout(t);t=setTimeout(()=>fn(...a),ms);};};
 function fadeIn(node){
   if(!node) return;
@@ -950,7 +963,7 @@ function renderKPIs(cur,prev){
     {k:"Avaliadas",v:c.ratedPct==null?"—":Math.round(c.ratedPct)+"%",
      foot:trendChip(c.ratedPct,period?p.ratedPct:null,true,d=>d.toFixed(1)+" p.p.")
           +`<span class="note hastip" data-tip="Tarefas em que o solicitante realmente respondeu a avaliação (Satisfeito/Insatisfeito). As demais ficam sem nota e são presumidas satisfeitas.">${nf.format(c.rated)} de ${nf.format(c.n)} responderam</span>`},
-    {k:"Satisfação",v:c.satPct==null?"—":Math.round(c.satPct)+"%",
+    {k:"Satisfação",v:fmtSat(c.satPct),
      foot:trendChip(c.satPct,period?p.satPct:null,true,d=>d.toFixed(1)+" p.p.")
           +`<span class="note">${c.sat===1?"1 satisfeita":`${nf.format(c.sat)} satisfeitas`} e ${c.insat===1?"1 insatisfeita":`${nf.format(c.insat)} insatisfeitas`}</span>`}
   ];
@@ -1110,11 +1123,13 @@ function ringSvg(pct){
     <text x="21" y="25" text-anchor="middle" font-size="10" fill="#9AA0B4" font-weight="700">—</text></svg>`;
   const col=pct>=85?"#00973A":pct>=60?"#EB6B10":"#DE001A";
   const r=16,c=2*Math.PI*r,off=c-(pct/100)*c;
+  /* "99,6" tem um caractere a mais que "100" — fonte menor para caber no círculo */
+  const txt=satNum(pct);
   return `<svg class="ring" width="42" height="42" viewBox="0 0 42 42" aria-hidden="true">
     <circle cx="21" cy="21" r="${r}" fill="none" stroke="#EEF1F8" stroke-width="4"/>
     <circle cx="21" cy="21" r="${r}" fill="none" stroke="${col}" stroke-width="4" stroke-linecap="round"
       stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 21 21)"/>
-    <text x="21" y="25" text-anchor="middle" font-size="11" fill="${col}" font-weight="700">${Math.round(pct)}</text></svg>`;
+    <text x="21" y="25" text-anchor="middle" font-size="${txt.length>3?9.5:11}" fill="${col}" font-weight="700">${txt}</text></svg>`;
 }
 function renderGrid(list){
   if(view==="colab"){ renderColabGrid(list); return; }
@@ -1165,7 +1180,7 @@ function renderColabList(list){
       <div class="colab-mini">${s.n} tarefa(s)</div>
       <div class="colab-mini">${fmtDur(s.avgExec)}</div>
       <div class="colab-mini hastip" style="color:${pc}" data-tip="${esc(TIP_NO_PRAZO)}">${s.noPrazoPct==null?"—":Math.round(s.noPrazoPct)+"%"} no prazo</div>
-      <div class="colab-mini" style="font-weight:700">${s.satPct==null?"—":Math.round(s.satPct)+"%"} satisf.</div>
+      <div class="colab-mini" style="font-weight:700">${fmtSat(s.satPct)} satisf.</div>
     </div>`;
   }).join("");
   listBox.querySelectorAll(".colab-row").forEach(rowEl=>{

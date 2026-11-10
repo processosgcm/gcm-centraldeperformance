@@ -415,6 +415,7 @@ let metaFetched=new Set();       /* tarefas cujo prazo já foi buscado */
 let lastRecentRefresh=0;         /* última reconsulta das tarefas recentes */
 let bitrixOK=false;
 let booting=false;               /* impede duas atualizações ao mesmo tempo */
+let lastFullAt=0;                /* hora da última carga completa da tabela */
 let lastOkAt=null;               /* hora da última leitura do Supabase que deu certo */
 let view="setor",period=7;
 let trendGran=null; // dia|mes|ano escolhido no gráfico; null = automático ("Tudo" e "Personalizado")
@@ -521,12 +522,19 @@ function bindTips(root){
 }
 
 /* ═════════ SUPABASE ═════════ */
-async function fetchSupabase(){
+/* desde (opcional, "AAAA-MM-DD"): traz só as linhas que podem ter mudado a
+   partir dessa data. Uma linha só muda quando: é criada (data_envio), recebe
+   a resposta final (data_resposta) ou está aguardando justificativa. Sem
+   "desde", traz a tabela inteira. */
+async function fetchSupabase(desde){
   const out=[],size=1000; let from=0;
+  const filtro=desde
+    ? `&or=(data_envio.gte.${desde},data_resposta.gte.${desde},status.eq.${WAITING_STATUS})`
+    : "";
   while(true){
     /* "id" desempata a ordem: sem ele, linhas com a mesma data de envio podem
        trocar de página entre uma consulta e outra */
-    const res=await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=${COLUMNS}&order=data_envio.desc.nullslast,id.desc`,{
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}?select=${COLUMNS}${filtro}&order=data_envio.desc.nullslast,id.desc`,{
       headers:{apikey:SUPABASE_ANON_KEY,Authorization:`Bearer ${SUPABASE_ANON_KEY}`,
                "Range-Unit":"items",Range:`${from}-${from+size-1}`}});
     if(!res.ok) throw {stage:"supabase",status:res.status,message:(await res.text().catch(()=>"")).slice(0,240)};
@@ -1584,7 +1592,7 @@ function avisosDados(){
   return (DUP_COUNT?` · ${nf.format(DUP_COUNT)} linha(s) repetida(s) da mesma tarefa ignorada(s)`:"")
     +(ESCALA_ANTIGA?` · ⚠ ${nf.format(ESCALA_ANTIGA)} avaliação(ões) com nota diferente de 1 e 2`:"");
 }
-async function boot(){
+async function boot(forcarCompleta){
   if(booting) return;             /* já tem uma atualização em andamento */
   booting=true;
   const btn=el("btnSync");
@@ -1592,7 +1600,27 @@ async function boot(){
   el("syncTxt").textContent="sincronizando…";
   try{
     try{
-      RAW=await fetchSupabase(); invalidate();
+      /* carga completa: só na abertura e no botão "sincronizar". Nas outras
+         atualizações (a cada 5 min) busca só as linhas que podem ter mudado
+         desde ontem e junta pelo id — é isso que mantém o consumo de dados
+         (Egress) do Supabase baixo. Não há recarga completa periódica porque
+         as linhas da tabela nunca são apagadas. */
+      const completa=forcarCompleta===true||!lastFullAt;
+      if(completa){
+        RAW=await fetchSupabase();
+        lastFullAt=Date.now();
+      }else{
+        const desde=new Date(lastOkAt.getTime()-86400000).toISOString().slice(0,10);
+        const mudou=await fetchSupabase(desde);
+        if(mudou.length){
+          const porId=new Map(RAW.map(r=>[r.id,r]));
+          mudou.forEach(r=>porId.set(r.id,r));
+          /* mesma ordem da carga completa: data_envio desc (vazios no fim), id desc */
+          const t=r=>{ const d=toDate(r.data_envio); return d?d.getTime():-Infinity; };
+          RAW=[...porId.values()].sort((a,b)=>(t(b)-t(a))||String(b.id).localeCompare(String(a.id),undefined,{numeric:true}));
+        }
+      }
+      invalidate();
       lastOkAt=new Date();
       el("dotSupa").className="dot";
     }catch(e){
@@ -1658,7 +1686,7 @@ async function boot(){
 }
 
 /* ═════════ EVENTOS ═════════ */
-el("btnSync").addEventListener("click",boot);
+el("btnSync").addEventListener("click",()=>boot(true));
 el("btnLogout").addEventListener("click",()=>{
   sessionStorage.removeItem("cp_session"); location.href="login.html";
 });
@@ -1816,7 +1844,12 @@ function renderPermsFiltrado(){
 loadPrefs();
 aplicarRestricoesDeAcesso();
 boot();
-setInterval(boot,5*60*1000);
+/* a cada 5 min, mas só com a aba visível: aba em segundo plano não consulta.
+   Ao voltar para a aba, atualiza na hora se os dados tiverem mais de 5 min. */
+setInterval(()=>{ if(!document.hidden) boot(); },5*60*1000);
+document.addEventListener("visibilitychange",()=>{
+  if(!document.hidden&&lastOkAt&&Date.now()-lastOkAt.getTime()>5*60*1000) boot();
+});
 </script>
 </body>
 </html>
